@@ -70,7 +70,7 @@ All maps use the same longitude and latitude limits and the same color scale. Co
 ```{r}
 #| label: geographic-maps
 #| column: screen
-#| out-width: 100%
+#| out-width: 90%
 #| fig-cap: "Restaurant locations by geographic system, using a shared map extent."
 
 make_map <- function(result, title) {
@@ -88,7 +88,7 @@ make_map <- function(result, title) {
       data = result$restaurants,
       color = "darkblue",
       alpha = 0.5,
-      size = 1
+      size = 0.7
     ) +
 
     # Same geographic extent for all maps
