@@ -213,10 +213,10 @@ map_restaurants <- function(
         n_restaurants > 0 &
           n_restaurants < min_restaurants
       ),
-      median_restaurants = median(n_restaurants),
-      mean_restaurants = mean(n_restaurants),
-      min_restaurants = min(n_restaurants),
-      max_restaurants = max(n_restaurants)
+      median_restaurants = median(n_restaurants[n_restaurants > 0]),
+      mean_restaurants = mean(n_restaurants[n_restaurants > 0]),
+      min_restaurants = min(n_restaurants[n_restaurants > 0]),
+      max_restaurants = max(n_restaurants[n_restaurants > 0])
     )
   
   # Identify areas with few restaurants

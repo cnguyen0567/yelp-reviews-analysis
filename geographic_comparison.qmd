@@ -40,7 +40,9 @@ results <- list(
 
 ## Geographic coverage comparison
 
-The table compares the number of geographic areas, unique restaurants assigned to an area, restaurants without an assignment, and the minimum and maximum restaurant counts per area. Unmatched restaurants include businesses with missing coordinates.
+The table summarizes the geographic distribution of restaurants in the selected dietary-friendly categories: vegetarian, vegan, and gluten-free.
+
+It includes the number of geographic areas, unique restaurants assigned to an area, unmatched restaurants (including businesses with missing coordinates), and the minimum, median, and maximum number of restaurants per area. The minimum, median, and maximum are calculated using only areas with non-zero restaurant counts.
 
 ```{r comparison-table}
 comparison_table <- bind_rows(lapply(names(results), function(label) {
@@ -50,8 +52,10 @@ comparison_table <- bind_rows(lapply(names(results), function(label) {
     `Number of areas` = result$sample_size$total_areas,
     `Restaurants assigned` = result$coverage$matched,
     `Unmatched restaurants` = result$coverage$unmatched + result$coverage$missing_coordinates,
-    `Smallest area count` = result$sample_size$min_restaurants,
-    `Largest area count` = result$sample_size$max_restaurants
+    `Areas with restaurants` = result$sample_size$total_areas - result$sample_size$empty_areas,
+    `Min area count` = result$sample_size$min_restaurants,
+    `Med area count` = result$sample_size$median_restaurants,
+    `Max area count` = result$sample_size$max_restaurants
   )
 }))
 
@@ -65,36 +69,46 @@ All maps use the same longitude and latitude limits and the same color scale. Co
 
 ```{r}
 #| label: geographic-maps
-#| fig-width: 12
-#| fig-height: 10
-#| fig-cap: "Restaurant counts by geographic system, using a shared color scale and map extent."
-
-max_count <- max(vapply(results, function(x) x$sample_size$max_restaurants,
-                        numeric(1)), na.rm = TRUE)
+#| column: screen
+#| out-width: 100%
+#| fig-cap: "Restaurant locations by geographic system, using a shared map extent."
 
 make_map <- function(result, title) {
-  result$count_map +
+  ggplot() +
+    # Geographic boundaries
+    geom_sf(
+      data = result$boundaries,
+      fill = "grey95",
+      color = "grey60",
+      linewidth = 0.3
+    ) +
+
+    # Restaurant locations
+    geom_sf(
+      data = result$restaurants,
+      color = "darkblue",
+      alpha = 0.5,
+      size = 1
+    ) +
+
+    # Same geographic extent for all maps
     coord_sf(
       xlim = c(-90.2, -90.0),
-      ylim = c(29.9, 30.5),
+      ylim = c(29.9, 30.05),
       default_crs = st_crs(4326),
       expand = FALSE
     ) +
-    scale_fill_viridis_c(
-      option = "C",
-      limits = c(0, max(1, max_count)),
-      name = "Restaurants"
-    ) +
+
     labs(title = title) +
     theme_minimal() +
-    theme(plot.title = element_text(size = 11, face = "bold"))
+    theme(
+      plot.title = element_text(size = 11, face = "bold")
+    )
 }
 
 maps <- Map(make_map, results, names(results))
-if (length(maps) == 3L) maps[[4L]] <- patchwork::plot_spacer()
 
-wrap_plots(maps, ncol = 2, guides = "collect") &
-  theme(legend.position = "bottom")
+wrap_plots(maps, ncol = 3)
 ```
 
 ## Interpretation
