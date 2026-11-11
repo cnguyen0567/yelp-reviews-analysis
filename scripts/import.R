@@ -44,14 +44,14 @@ new_orleans_restaurants <- business |>
     !is.na(categories),
     str_detect(categories, regex("Restaurants", ignore_case = TRUE))
   ) |>
-  mutate(
-    postal_code = na_if(postal_code, ""),
-    categories = str_squish(categories),
-    business_name = str_squish(name)
+  mutate(                                      #add columns:
+    postal_code = na_if(postal_code, ""),      #-> blank n/a zip code
+    categories = str_squish(categories),       #-> revmove white space from categories 
+    business_name = str_squish(name)           #-> remove white space from business name
   ) |>
-  distinct(business_id, .keep_all = TRUE)                             #remove duplicate business_id row
+  distinct(business_id, .keep_all = TRUE)      #remove duplicate business_id row
 
-new_orleans_restaurants |>
+new_orleans_restaurants |>                     #data check
   summarise(
     number_of_restaurants = n(),
     missing_latitude = sum(is.na(latitude)),
@@ -83,6 +83,3 @@ saveRDS(
   "data/new_orleans/reviews_new_orleans.rds",
   compress = "xz"
 )
-
-# read it back in later
-new_orleans_restaurants_loaded <- readRDS("data/new_orleans/business_new_orleans.rds")
