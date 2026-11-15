@@ -8,7 +8,9 @@ required_packages <- c(
   "scales",
   "viridis",
   "patchwork",
-  "knitr"
+  "knitr",
+  "DT",
+  "ggiraph"
 )
 
 for (pkg in required_packages) {

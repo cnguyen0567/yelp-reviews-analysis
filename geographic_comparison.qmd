@@ -36,9 +36,9 @@ results <- list(
 ## Geographic coverage comparison
 
 The table compares restaurant coverage, geographic area sizes, restaurant counts,
-and restaurant density for the selected dietary-friendly categories: vegetarian,
-vegan, and gluten-free. All measures come from each result's
-`geo_system_summary` table.
+and restaurant density for the selected vegetarian-friendly categories: "Vegetarian", "Vegan", "Falafel", "Bagels".
+
+All measures come from each result's `geo_system_summary` and `area_summat` table.
 
 **Matched restaurants** fall within a boundary in the geographic system.
 **Unmatched restaurants** have coordinates but fall outside all boundaries;
@@ -66,7 +66,7 @@ comparison_table <- bind_rows(lapply(names(results), function(label) {
     `Total areas` = summary$total_areas,
     `Areas with restaurants` = summary$total_areas - summary$empty_areas,
     `Empty areas` = summary$empty_areas,
-    `Sparse areas (ρ < med_ρ)` = summary$sparse_areas,
+    `Sparse areas` = summary$sparse_areas,
     `Mean area (sq mi)` = summary$avg_sqmi,
     `Median area (sq mi)` = summary$median_sqmi,
 
@@ -84,7 +84,7 @@ comparison_table <- bind_rows(lapply(names(results), function(label) {
     `Median density` = summary$median_density,
     `Mean density` = summary$mean_density,
     `75th percentile density` = summary$q75_density,
-    `Maximum density` = summary$max_density,
+    `Maximum density` = summary$max_density
   )
 }))
 
@@ -130,6 +130,73 @@ knitr::kable(
 )
 ```
 
+## Area summary (more than 3 restaurants)
+
+Each tab contains every area with `n_restaurants > 3` in that geographic system.
+Scroll horizontally to see all metrics; the **Geographic system** and **Area name**
+columns remain fixed. Scroll vertically to view long tables; there is no row pagination.
+
+```{r area-summary-data}
+area_summary_table <- bind_rows(lapply(names(results), function(label) {
+  results[[label]]$area_summary |>
+    st_drop_geometry() |>
+    filter(n_restaurants > 3) |>
+    transmute(
+      `Geographic system` = label,
+      `Area name` = area_name,
+      Restaurants = n_restaurants,
+      `Area (sq mi)` = round(area_sqmi, 2),
+      `Restaurants / sq mi` = round(restaurants_per_sqmi, 2),
+      `Average rating` = round(avg_rating, 2),
+      `Median rating` = round(median_rating, 2),
+      `Weighted rating` = round(weighted_rating, 2)
+    )
+})) |>
+  arrange(`Geographic system`, desc(Restaurants), `Area name`)
+
+# FixedColumns freezes the first two columns while the remaining metrics scroll.
+make_area_table <- function(geography) {
+  DT::datatable(
+    area_summary_table |>
+      filter(`Geographic system` == geography),
+    rownames = FALSE,
+    extensions = 'FixedColumns',
+    options = list(
+      scrollX = TRUE,
+      scrollY = "550px",
+      scrollCollapse = TRUE,
+      fixedColumns = list(leftColumns = 2),
+      paging = FALSE,
+      searching = TRUE,
+      info = FALSE,
+      dom = 'ft'
+    )
+  )
+}
+```
+
+::: {.panel-tabset}
+
+### 1. ZIP/ZCTA
+
+```{r area-summary-zip}
+make_area_table("ZIP/ZCTA")
+```
+
+### 2. Census tract
+
+```{r area-summary-tracts}
+make_area_table("Census tract")
+```
+
+### 3. Neighborhood Statistical Area
+
+```{r area-summary-neighborhood}
+make_area_table("Neighborhood Statistical Area")
+```
+
+:::
+
 ## Restaurant locations by geographic area
 
 All three maps use the same longitude and latitude limits. Gray polygons show
@@ -144,47 +211,341 @@ valid coordinates. Point color does not represent restaurant counts or density.
 
 make_map <- function(result, title) {
   ggplot() +
-    # Geographic polygons now come from area_summary.
-    geom_sf(
+    geom_sf_interactive(
       data = result$area_summary,
-      fill = "grey95",
+      aes(
+        fill = n_restaurants > 3,
+        tooltip = paste0(
+          area_name,
+          "\nRestaurants: ", n_restaurants
+        )
+      ),
       color = "grey60",
       linewidth = 0.3
     ) +
-
-    # Restaurant locations are still stored in restaurants.
+    scale_fill_manual(
+      values = c(
+        "FALSE" = "gray90",
+        "TRUE" = "#d4ebf2"
+      ),
+      labels = c("0–3", "4+"),
+      name = "Number of Restaurants"
+    ) +
     geom_sf(
       data = result$restaurants,
       color = "darkblue",
       alpha = 0.5,
       size = 0.7
     ) +
-
-    # Same geographic extent for all maps
     coord_sf(
       xlim = c(-90.2, -90.0),
       ylim = c(29.9, 30.05),
       default_crs = st_crs(4326),
       expand = FALSE
     ) +
-
     labs(title = title) +
-    theme_minimal() +
-    theme(
-      plot.title = element_text(size = 11, face = "bold")
-    )
+    theme_minimal()
 }
 
 maps <- Map(make_map, results, names(results))
 
-wrap_plots(maps, ncol = 3)
+combined_maps <- wrap_plots(maps, ncol = 3) +
+  plot_layout(
+    guides = "collect",
+    axes = "collect_y"
+  ) &
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 8),
+    legend.text = element_text(size = 7),
+    plot.title = element_text(size = 9),
+    axis.text = element_text(size = 7),
+    axis.title = element_text(size = 8)
+  )
+
+girafe(
+  ggobj = combined_maps,
+  width_svg = 12,
+  height_svg = 4.8
+)
 ```
 
-## Interpretation
+## Custom neighborhood groups
 
-```{r interpretation, results='asis'}
-most_assigned <- comparison_table$`Geographic system`[
-  which.max(comparison_table$`Matched restaurants`)]
-cat("The geographic system assigning the largest number of restaurants is **",
-    most_assigned, "**. ", sep = "")
+The map below combines selected Neighborhood Statistical Areas into custom
+comparison groups. Areas outside these groups remain gray. The groupings are
+analytical choices, not official New Orleans neighborhood boundaries. Hover over
+a colored region to see its member neighborhoods and combined restaurant count.
+
+```{r grouped-neighborhood-map}
+#| column: screen
+#| fig-width: 13
+#| fig-height: 8
+#| out-width: 100%
+#| fig-cap: "Custom groups of New Orleans neighborhoods, with individual neighborhood borders preserved; gray areas are not included in a selected group."
+
+# Normalize neighborhood names to handle capitalization, accents, and punctuation.
+normalize_neighborhood <- function(x) {
+  x |>
+    stringi::stri_trans_general("Latin-ASCII") |>
+    str_to_upper() |>
+    str_replace_all("[^A-Z0-9]+", " ") |>
+    str_squish()
+}
+
+# One name and one color per selected group, plus gray for all other areas.
+group_levels <- c(
+  "Central Business District",
+  "French Quarter",
+  "Mid-City",
+  "Marigny",
+  "Lower Garden District + Central City",
+  "Bywater + St. Claude",
+  "Audubon + West Riverside + East Riverside + Touro + Garden District + Uptown",
+  "Leonidas + East Carrollton",
+  "Seventh Ward + Treme-Lafitte + Fairgrounds + Bayou St. John",
+  "Other"
+)
+
+neighborhood_groups <- neighborhood_result$area_summary |>
+  mutate(
+    normalized_name = normalize_neighborhood(area_name),
+    neighborhood_group = case_when(
+      normalized_name == "CENTRAL BUSINESS DISTRICT" ~ group_levels[1],
+      normalized_name == "FRENCH QUARTER" ~ group_levels[2],
+      normalized_name == "MID CITY" ~ group_levels[3],
+      normalized_name == "MARIGNY" ~ group_levels[4],
+      normalized_name %in% c("LOWER GARDEN DISTRICT", "CENTRAL CITY") ~ group_levels[5],
+      normalized_name %in% c("BYWATER", "ST CLAUDE", "ST CLAUDE 9") ~ group_levels[6],
+      normalized_name %in% c(
+        "AUDUBON", "WEST RIVERSIDE", "EAST RIVERSIDE", "TOURO",
+        "GARDEN DISTRICT", "UPTOWN"
+      ) ~ group_levels[7],
+      normalized_name %in% c("LEONIDAS", "LEONARD", "EAST CARROLLTON") ~ group_levels[8],
+      normalized_name %in% c(
+        "SEVENTH WARD", "TREME LAFITTE", "FAIRGROUND", "FAIRGROUNDS",
+        "BAYOU ST JOHN"
+      ) ~ group_levels[9],
+      TRUE ~ "Other"
+    ),
+    neighborhood_group = factor(neighborhood_group, levels = group_levels)
+  )
+
+# Count restaurants by group WITHOUT dissolving individual neighborhood polygons.
+# This preserves each neighborhood's geometry and its own border.
+neighborhood_groups <- neighborhood_groups |>
+  group_by(neighborhood_group) |>
+  mutate(
+    group_restaurants = sum(n_restaurants, na.rm = TRUE),
+    hover_text = if_else(
+      as.character(neighborhood_group) == "Other",
+      paste0(
+        "Neighborhood: ", area_name,
+        "\nRestaurants: ", n_restaurants
+      ),
+      paste0(
+        "Group: ", as.character(neighborhood_group),
+        "\nNeighborhood: ", area_name,
+        "\nRestaurants in neighborhood: ", n_restaurants,
+        "\nRestaurants in group: ", group_restaurants
+      )
+    )
+  ) |>
+  ungroup()
+
+group_colors <- c(
+  setNames(grDevices::hcl.colors(9, palette = "Dark 3"), group_levels[1:9]),
+  "Other" = "grey85"
+)
+
+grouped_neighborhood_map <- ggplot() +
+  # Draw each neighborhood separately, with a shared color for its group.
+  ggiraph::geom_sf_interactive(
+    data = neighborhood_groups,
+    aes(
+      fill = neighborhood_group,
+      tooltip = hover_text
+    ),
+    color = "grey55",
+    linewidth = 0.35
+  ) +
+  geom_sf(
+    data = neighborhood_result$restaurants,
+    color = "darkblue",
+    alpha = 0.4,
+    size = 0.6
+  ) +
+  scale_fill_manual(
+    values = group_colors,
+    breaks = group_levels,
+    labels = str_wrap(group_levels, width = 34),
+    drop = FALSE,
+    name = "Neighborhood group"
+  ) +
+  coord_sf(
+    xlim = c(-90.2, -90.0),
+    ylim = c(29.9, 30.05),
+    default_crs = st_crs(4326),
+    expand = FALSE
+  ) +
+  labs(title = "Custom New Orleans Neighborhood Groups") +
+  guides(fill = guide_legend(ncol = 2, byrow = TRUE)) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 11, face = "bold"),
+    axis.text = element_text(size = 8),
+    legend.position = "bottom",
+    legend.title = element_text(size = 9),
+    legend.text = element_text(size = 7)
+  )
+
+ggiraph::girafe(
+  ggobj = grouped_neighborhood_map,
+  width_svg = 12,
+  height_svg = 8
+)
 ```
+
+
+<!-- ```{r grouped-neighborhood-map} -->
+<!-- #| column: screen -->
+<!-- #| fig-width: 13 -->
+<!-- #| fig-height: 8 -->
+<!-- #| out-width: 100% -->
+<!-- #| fig-cap: "Custom groups of New Orleans neighborhoods; gray areas are not included in a selected group." -->
+
+<!-- # Normalize neighborhood names to handle capitalization, accents, and punctuation. -->
+<!-- normalize_neighborhood <- function(x) { -->
+<!--   x |> -->
+<!--     stringi::stri_trans_general("Latin-ASCII") |> -->
+<!--     str_to_upper() |> -->
+<!--     str_replace_all("[^A-Z0-9]+", " ") |> -->
+<!--     str_squish() -->
+<!-- } -->
+
+<!-- # One name and one color per selected group, plus gray for all other areas. -->
+<!-- group_levels <- c( -->
+<!--   "Central Business District", -->
+<!--   "French Quarter", -->
+<!--   "Mid-City", -->
+<!--   "Marigny", -->
+<!--   "Lower Garden District + Central City", -->
+<!--   "Bywater + St. Claude", -->
+<!--   "Audubon + West Riverside + East Riverside + Touro + Garden District + Uptown", -->
+<!--   "Leonidas + East Carrollton", -->
+<!--   "Seventh Ward + Treme-Lafitte + Fairgrounds + Bayou St. John", -->
+<!--   "Other" -->
+<!-- ) -->
+
+<!-- neighborhood_groups <- neighborhood_result$area_summary |> -->
+<!--   mutate( -->
+<!--     normalized_name = normalize_neighborhood(area_name), -->
+<!--     neighborhood_group = case_when( -->
+<!--       normalized_name == "CENTRAL BUSINESS DISTRICT" ~ group_levels[1], -->
+<!--       normalized_name == "FRENCH QUARTER" ~ group_levels[2], -->
+<!--       normalized_name == "MID CITY" ~ group_levels[3], -->
+<!--       normalized_name == "MARIGNY" ~ group_levels[4], -->
+<!--       normalized_name %in% c("LOWER GARDEN DISTRICT", "CENTRAL CITY") ~ group_levels[5], -->
+<!--       normalized_name %in% c("BYWATER", "ST CLAUDE", "ST CLAUDE 9") ~ group_levels[6], -->
+<!--       normalized_name %in% c( -->
+<!--         "AUDUBON", "WEST RIVERSIDE", "EAST RIVERSIDE", "TOURO", -->
+<!--         "GARDEN DISTRICT", "UPTOWN" -->
+<!--       ) ~ group_levels[7], -->
+<!--       normalized_name %in% c("LEONIDAS", "LEONARD", "EAST CARROLLTON") ~ group_levels[8], -->
+<!--       normalized_name %in% c( -->
+<!--         "SEVENTH WARD", "TREME LAFITTE", "FAIRGROUND", "FAIRGROUNDS", -->
+<!--         "BAYOU ST JOHN" -->
+<!--       ) ~ group_levels[9], -->
+<!--       TRUE ~ "Other" -->
+<!--     ), -->
+<!--     neighborhood_group = factor(neighborhood_group, levels = group_levels) -->
+<!--   ) -->
+
+<!-- # Dissolve boundaries within each selected group; count restaurants together. -->
+<!-- colored_groups <- neighborhood_groups |> -->
+<!--   filter(neighborhood_group != "Other") |> -->
+<!--   st_make_valid() |> -->
+<!--   group_by(neighborhood_group) |> -->
+<!--   summarise( -->
+<!--     n_restaurants = sum(n_restaurants, na.rm = TRUE), -->
+<!--     member_names = paste(sort(unique(area_name)), collapse = ", "), -->
+<!--     .groups = "drop" -->
+<!--   ) -->
+
+<!-- # Keep all remaining neighborhood outlines visible in gray. -->
+<!-- other_neighborhoods <- neighborhood_groups |> -->
+<!--   filter(neighborhood_group == "Other") -->
+
+<!-- group_colors <- c( -->
+<!--   setNames(grDevices::hcl.colors(9, palette = "Dark 3"), group_levels[1:9]), -->
+<!--   "Other" = "grey85" -->
+<!-- ) -->
+
+<!-- grouped_neighborhood_map <- ggplot() + -->
+<!--   ggiraph::geom_sf_interactive( -->
+<!--     data = other_neighborhoods, -->
+<!--     aes( -->
+<!--       fill = neighborhood_group, -->
+<!--       tooltip = paste0(area_name, "\nRestaurants: ", n_restaurants) -->
+<!--     ), -->
+<!--     color = "white", -->
+<!--     linewidth = 0.3 -->
+<!--   ) + -->
+<!--   # ggiraph::geom_sf_interactive( -->
+<!--   #   data = colored_groups, -->
+<!--   #   aes( -->
+<!--   #     fill = neighborhood_group, -->
+<!--   #     tooltip = paste0( -->
+<!--   #       as.character(neighborhood_group), -->
+<!--   #       "\nNeighborhoods: ", member_names, -->
+<!--   #       "\nRestaurants: ", n_restaurants -->
+<!--   #     ) -->
+<!--   #   ), -->
+<!--   #   color = "white", -->
+<!--   #   linewidth = 0.4 -->
+<!--   # ) + -->
+<!--   ggiraph::geom_sf_interactive( -->
+<!--   data = neighborhood_groups, -->
+<!--   aes( -->
+<!--     fill = neighborhood_group, -->
+<!--     tooltip = hover_text -->
+<!--   ), -->
+<!--   color = "grey55", -->
+<!--   linewidth = 0.35 -->
+<!-- ) + -->
+<!--   geom_sf( -->
+<!--     data = neighborhood_result$restaurants, -->
+<!--     color = "darkblue", -->
+<!--     alpha = 0.4, -->
+<!--     size = 0.6 -->
+<!--   ) + -->
+<!--   scale_fill_manual( -->
+<!--     values = group_colors, -->
+<!--     breaks = group_levels, -->
+<!--     labels = str_wrap(group_levels, width = 34), -->
+<!--     drop = FALSE, -->
+<!--     name = "Neighborhood group" -->
+<!--   ) + -->
+<!--   coord_sf( -->
+<!--     xlim = c(-90.2, -90.0), -->
+<!--     ylim = c(29.9, 30.05), -->
+<!--     default_crs = st_crs(4326), -->
+<!--     expand = FALSE -->
+<!--   ) + -->
+<!--   labs(title = "Custom New Orleans Neighborhood Groups") + -->
+<!--   guides(fill = guide_legend(ncol = 2, byrow = TRUE)) + -->
+<!--   theme_minimal() + -->
+<!--   theme( -->
+<!--     plot.title = element_text(size = 11, face = "bold"), -->
+<!--     axis.text = element_text(size = 8), -->
+<!--     legend.position = "bottom", -->
+<!--     legend.title = element_text(size = 9), -->
+<!--     legend.text = element_text(size = 7) -->
+<!--   ) -->
+
+<!-- ggiraph::girafe( -->
+<!--   ggobj = grouped_neighborhood_map, -->
+<!--   width_svg = 12, -->
+<!--   height_svg = 8 -->
+<!-- ) -->
+<!-- ``` -->

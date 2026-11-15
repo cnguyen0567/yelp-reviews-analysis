@@ -44,7 +44,7 @@ louisiana_places <- tigris::places(
 )
 
 # Census Tract
-la_tracts <- tigris::tracts(
+nola_tracts <- tigris::tracts(
   state = "LA",
   county = "Orleans",
   cb = TRUE,
@@ -58,16 +58,15 @@ nola_neighborhoods <- st_read(
 )
 
 # Zip
-louisiana_zctas <- tigris::zctas(
+nola_zctas <- tigris::zctas(
   year = 2020,
   cb = TRUE,
   class = "sf"
 ) |>
   st_transform(st_crs(louisiana_places)) |>
   st_filter(
-    tigris::states(cb = TRUE, year = 2020) |>
-      filter(STUSPS == "LA") |>
-      st_transform(st_crs(louisiana_places))
+    louisiana_places |>
+      filter(NAME == "New Orleans")
   )
 
 
@@ -192,7 +191,7 @@ map_restaurants <- function(
       
       sparse_areas = sum(                                            #Num of areas with low number of restaurants w selected categories
         restaurants_per_sqmi > 0 &
-        restaurants_per_sqmi < median_density,
+        restaurants_per_sqmi < round(146/169.42, 0),
         na.rm = TRUE
       ),
       
@@ -281,7 +280,7 @@ map_restaurants <- function(
 # B. Call the functions for various geo areas
 tracts_result <- map_restaurants(
   restaurants = selected_businesses,
-  boundaries = la_tracts,
+  boundaries = nola_tracts,
   area_col = NAMELSAD,
   area_id = GEOID,
   map_title = "New Orleans Census Tracts"
@@ -297,7 +296,7 @@ neighborhood_result <- map_restaurants(
 
 zip_result <- map_restaurants(
   restaurants = selected_businesses,
-  boundaries = louisiana_zctas,
+  boundaries = nola_zctas,
   area_col = NAME20,
   area_id = GEOID20,
   map_title = "New Orleans Postal Code"

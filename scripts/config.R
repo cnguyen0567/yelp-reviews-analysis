@@ -13,6 +13,8 @@ library(patchwork)
 library(knitr)
 library(tibble)
 library(tidyr)
+library(DT)
+library(ggiraph)
 
 options(tigris_use_cache = TRUE)
 

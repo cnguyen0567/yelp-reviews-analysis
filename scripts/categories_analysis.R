@@ -34,7 +34,6 @@ selected_categories <- business_categories_by_row |>
   summarise(
     has_vegetarian = any(category == "Vegetarian"),
     has_vegan = any(category == "Vegan"),
-    #has_gf = any(category == "Gluten-Free"),
     has_falafel = any(category == "Falafel"),
     has_bagel = any(category == "Bagels"),
     has_salad = any(category == "Salad"),
@@ -43,24 +42,24 @@ selected_categories <- business_categories_by_row |>
   )
 
 # Count # of restaurants match the chosen categories
-selected_categories |>
-  summarise(
-    any = sum(has_vegetarian | has_vegan | has_falafel | has_bagel),
-    vegetarian_only = sum(has_vegetarian & !has_vegan & !has_falafel & !has_bagel & !has_salad & !has_cafe),
-    vegan_only = sum(!has_vegetarian & has_vegan & !has_falafel & !has_bagel & !has_salad & !has_cafe),
-    falafel_only = sum(!has_vegetarian & !has_vegan & has_falafel & !has_bagel & !has_salad & !has_cafe),
-    bagel_only = sum(!has_vegetarian & !has_vegan & !has_falafel & has_bagel & !has_salad & !has_cafe),
-    salad_only = sum(!has_vegetarian & !has_vegan & !has_falafel & !has_bagel & has_salad & !has_cafe),
-    cafe_only = sum(!has_vegetarian & !has_vegan & !has_falafel & !has_bagel & !has_salad & has_cafe)
-  )
-
-# Print sample businesses with categories
-business_loaded |>
-  filter(str_detect(categories, regex("cafe", ignore_case = TRUE))) |>
-  select(business_name, categories) |>
-  distinct() |>
-  slice_head(n = 40) |>
-  print()
+# selected_categories |>
+#   summarise(
+#     any = sum(has_vegetarian | has_vegan | has_falafel | has_bagel),
+#     vegetarian_only = sum(has_vegetarian & !has_vegan & !has_falafel & !has_bagel & !has_salad & !has_cafe),
+#     vegan_only = sum(!has_vegetarian & has_vegan & !has_falafel & !has_bagel & !has_salad & !has_cafe),
+#     falafel_only = sum(!has_vegetarian & !has_vegan & has_falafel & !has_bagel & !has_salad & !has_cafe),
+#     bagel_only = sum(!has_vegetarian & !has_vegan & !has_falafel & has_bagel & !has_salad & !has_cafe),
+#     salad_only = sum(!has_vegetarian & !has_vegan & !has_falafel & !has_bagel & has_salad & !has_cafe),
+#     cafe_only = sum(!has_vegetarian & !has_vegan & !has_falafel & !has_bagel & !has_salad & has_cafe)
+#   )
+# 
+# # Print sample businesses with categories
+# business_loaded |>
+#   filter(str_detect(categories, regex("cafe", ignore_case = TRUE))) |>
+#   select(business_name, categories) |>
+#   distinct() |>
+#   slice_head(n = 40) |>
+#   print()
 
 
 # Final selection ==============================================================
