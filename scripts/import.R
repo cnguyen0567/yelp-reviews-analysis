@@ -1,20 +1,9 @@
 ## Library =====================================================================
-library(tidyverse)
-library(jsonlite)
-library(lubridate)
-library(sf)
-library(tigris)
-library(scales)
-library(viridis)
-
-options(tigris_use_cache = TRUE)
+source("scripts/config.R")
 
 ## Importing raw data ==========================================================
-business_file <- "data/raw/yelp_academic_dataset_business.json"
-review_file <- "data/raw/yelp_academic_dataset_review.json"
-
 business_raw <- jsonlite::stream_in(
-  file(business_file),
+  file(business_raw_json),
   verbose = FALSE
 )
 
@@ -25,7 +14,7 @@ business <- business_raw |>
   )
 
 review_raw <- jsonlite::stream_in(
-  file(review_file),
+  file(review_raw_json),
   verbose = FALSE
 )
 
@@ -46,12 +35,13 @@ new_orleans_restaurants <- business |>
   ) |>
   mutate(                                      #add columns:
     postal_code = na_if(postal_code, ""),      #-> blank n/a zip code
-    categories = str_squish(categories),       #-> revmove white space from categories 
+    categories = str_squish(categories),       #-> remove white space from categories 
     business_name = str_squish(name)           #-> remove white space from business name
   ) |>
   distinct(business_id, .keep_all = TRUE)      #remove duplicate business_id row
 
-new_orleans_restaurants |>                     #data check
+
+new_orleans_restaurants |>                     #data check for # of records with missing info
   summarise(
     number_of_restaurants = n(),
     missing_latitude = sum(is.na(latitude)),
@@ -60,26 +50,25 @@ new_orleans_restaurants |>                     #data check
   )
 
 
-## Filter reviews for filtered restaurants (by business_id) ===================
+## Filter reviews for filtered restaurants (by business_id) ====================
 new_orleans_reviews <- reviews |>
   semi_join(new_orleans_restaurants, by = "business_id")     #semi_join doesn't add columns from restaurants, just filter
 
 
 ## Save filtered data as RDS ===================================================
 # Create directory if not available
-folder = "data/new_orleans"
-dir.create(folder, recursive = TRUE, showWarnings = FALSE)
+dir.create(data_folder, recursive = TRUE, showWarnings = FALSE)
 
 # save the RDS file
 saveRDS(
   new_orleans_restaurants,
-  "data/new_orleans/business_new_orleans.rds",
+  business_filtered_rds,
   compress = "xz"
 )
 
 
 saveRDS(
   new_orleans_reviews,
-  "data/new_orleans/reviews_new_orleans.rds",
+  review_filtered_rds,
   compress = "xz"
 )

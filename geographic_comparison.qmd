@@ -13,15 +13,10 @@ execute:
 ---
 
 ```{r setup}
-library(dplyr)
-library(ggplot2)
-library(sf)
-library(patchwork)
-library(knitr)
-library(tibble)
+# Libraries
+source("scripts/config.R")
 
-# Run the analysis script that defines map_restaurants() and creates
-# Run the geographic analysis script
+# Load the current geographic analysis and its three result objects.
 source("scripts/geography_analysis.R")
 
 required <- c("zip_result", "tracts_result", "neighborhood_result")
@@ -40,32 +35,106 @@ results <- list(
 
 ## Geographic coverage comparison
 
-The table summarizes the geographic distribution of restaurants in the selected dietary-friendly categories: vegetarian, vegan, and gluten-free.
+The table compares restaurant coverage, geographic area sizes, restaurant counts,
+and restaurant density for the selected dietary-friendly categories: vegetarian,
+vegan, and gluten-free. All measures come from each result's
+`geo_system_summary` table.
 
-It includes the number of geographic areas, unique restaurants assigned to an area, unmatched restaurants (including businesses with missing coordinates), and the minimum, median, and maximum number of restaurants per area. The minimum, median, and maximum are calculated using only areas with non-zero restaurant counts.
+**Matched restaurants** fall within a boundary in the geographic system.
+**Unmatched restaurants** have coordinates but fall outside all boundaries;
+restaurants with **missing coordinates** are counted separately.
+**Total unassigned** is the sum of those last two groups. Restaurant-count
+statistics exclude areas with zero restaurants. Density is measured in
+restaurants per square mile and likewise excludes zero-restaurant areas.
 
 ```{r comparison-table}
 comparison_table <- bind_rows(lapply(names(results), function(label) {
-  result <- results[[label]]
+  summary <- results[[label]]$geo_system_summary |>
+    st_drop_geometry()
+
   tibble(
     `Geographic system` = label,
-    `Number of areas` = result$sample_size$total_areas,
-    `Restaurants assigned` = result$coverage$matched,
-    `Unmatched restaurants` = result$coverage$unmatched + result$coverage$missing_coordinates,
-    `Areas with restaurants` = result$sample_size$total_areas - result$sample_size$empty_areas,
-    `Min area count` = result$sample_size$min_restaurants,
-    `Med area count` = result$sample_size$median_restaurants,
-    `Max area count` = result$sample_size$max_restaurants
+
+    # Restaurant coverage
+    `Total restaurants` = summary$total_restaurants,
+    `Missing coordinates` = summary$restaurants_w_missing_coord,
+    `Matched restaurants` = summary$matched_restaurants,
+    `Unmatched restaurants` = summary$unmatched_restaurants,
+    
+
+    # Boundary coverage and size
+    `Total areas` = summary$total_areas,
+    `Areas with restaurants` = summary$total_areas - summary$empty_areas,
+    `Empty areas` = summary$empty_areas,
+    `Sparse areas (ρ < med_ρ)` = summary$sparse_areas,
+    `Mean area (sq mi)` = summary$avg_sqmi,
+    `Median area (sq mi)` = summary$median_sqmi,
+
+    # Restaurant counts in non-empty areas
+    `Minimum restaurants per area` = summary$min_restaurants,
+    `25th percentile restaurants per area` = summary$q25_restaurants,
+    `Median restaurants per area` = summary$median_restaurants,
+    `Mean restaurants per area` = summary$mean_restaurants,
+    `75th percentile restaurants per area` = summary$q75_restaurants,
+    `Maximum restaurants per area` = summary$max_restaurants,
+
+    # Density in non-empty areas
+    `Minimum density` = summary$min_density,
+    `25th percentile density` = summary$q25_density,
+    `Median density` = summary$median_density,
+    `Mean density` = summary$mean_density,
+    `75th percentile density` = summary$q75_density,
+    `Maximum density` = summary$max_density,
   )
 }))
 
-knitr::kable(comparison_table,
-             caption = "Restaurant assignment and counts by geographic system")
+# Display metrics down the rows for a readable, side-by-side comparison.
+count_metrics <- c(
+  "Total restaurants", "Missing coordinates", "Matched restaurants", "Unmatched restaurants",
+   "Total areas", "Areas with restaurants", "Empty areas", "Sparse areas"
+  , "Minimum restaurants per area"
+  , "25th percentile restaurants per area"
+  , "Median restaurants per area"
+  , "75th percentile restaurants per area"
+  , "Maximum restaurants per area", "Areas below median density"
+)
+
+comparison_display <- comparison_table |>
+  pivot_longer(
+    cols = -`Geographic system`,
+    names_to = "Metric",
+    values_to = "Value"
+  ) |>
+  mutate(
+    Category = case_when(
+      Metric %in% c("Total restaurants", "Matched restaurants",
+                    "Unmatched restaurants", "Missing coordinates") ~ "Restaurant coverage",
+      Metric %in% c("Total areas", "Areas with restaurants", "Empty areas", "Sparse areas",
+                    "Mean area (sq mi)", "Median area (sq mi)") ~ "Geographic areas",
+      str_detect(Metric, "restaurants per area") ~ "Restaurants per area",
+      TRUE ~ "Restaurant density (per sq mi)"
+    ),
+    Value = if_else(
+      Metric %in% count_metrics,
+      formatC(Value, format = "f", digits = 0, big.mark = ","),
+      formatC(Value, format = "f", digits = 2, big.mark = ",")
+    )
+  ) |>
+  select(Category, Metric, `Geographic system`, Value) |>
+  pivot_wider(names_from = `Geographic system`, values_from = Value)
+
+knitr::kable(
+  comparison_display,
+  caption = "Geographic coverage, area size, restaurant counts, and density by system",
+  align = c("l", "l", "r", "r", "r")
+)
 ```
 
-## Restaurant counts by geographic area
+## Restaurant locations by geographic area
 
-All maps use the same longitude and latitude limits and the same color scale. Colors represent the number of restaurants assigned to each geographic area, not restaurant density per square kilometer.
+All three maps use the same longitude and latitude limits. Gray polygons show
+geographic boundaries, and dark-blue points show restaurant locations with
+valid coordinates. Point color does not represent restaurant counts or density.
 
 ```{r}
 #| label: geographic-maps
@@ -75,15 +144,15 @@ All maps use the same longitude and latitude limits and the same color scale. Co
 
 make_map <- function(result, title) {
   ggplot() +
-    # Geographic boundaries
+    # Geographic polygons now come from area_summary.
     geom_sf(
-      data = result$boundaries,
+      data = result$area_summary,
       fill = "grey95",
       color = "grey60",
       linewidth = 0.3
     ) +
 
-    # Restaurant locations
+    # Restaurant locations are still stored in restaurants.
     geom_sf(
       data = result$restaurants,
       color = "darkblue",
@@ -115,8 +184,7 @@ wrap_plots(maps, ncol = 3)
 
 ```{r interpretation, results='asis'}
 most_assigned <- comparison_table$`Geographic system`[
-  which.max(comparison_table$`Restaurants assigned`)]
+  which.max(comparison_table$`Matched restaurants`)]
 cat("The geographic system assigning the largest number of restaurants is **",
     most_assigned, "**. ", sep = "")
-
 ```

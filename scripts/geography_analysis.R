@@ -1,73 +1,47 @@
-source("scripts/categories_analysis.R")
-options(tigris_use_cache = TRUE)
+source("scripts/config.R")
+
+## read in new orlean data =====================================================
+business_loaded <- readRDS(business_filtered_rds)
+review_loaded <- readRDS(review_filtered_rds)
 
 
-# Filtered restaurant and review data ==========================================
+# Filtered data ================================================================
+# Filtered restaurant (if categories contain >= 1 selected category)
+selected_categories_normalized <- selected_categories |>
+  str_squish() |>
+  str_to_lower()
+
 selected_businesses <- business_loaded |>
-  semi_join(
-    business_categories_by_row |>
-      filter(category %in% selected_categories),
-    by = "business_id"
-  )
+  mutate(
+    has_selected_category = purrr::map_lgl(
+      str_split(coalesce(categories, ""), pattern = ","),
+      \(category_list) {
+        category_list_normalized <- category_list |>
+          str_squish() |>
+          str_to_lower()
+        
+        any(category_list_normalized %in% selected_categories_normalized)
+      }
+    )
+  ) |>
+  filter(has_selected_category) |>
+  select(-has_selected_category)
 
+
+# Filtered review data
 selected_reviews <- review_loaded |>
   semi_join(selected_businesses, by = "business_id")
 
 
-# New Orlean Geo ===============================================================
-# Load Louisiana geographic boundaries
+
+# Load Louisiana Geographic Boundaries =========================================
+# LA State
 louisiana_places <- tigris::places(
   state = "LA",
   cb = TRUE,
   year = 2024,
   class = "sf"
 )
-
-# # Convert restaurant coordinates into spatial points
-# restaurant_points <- selected_businesses |>
-#   filter(!is.na(longitude), !is.na(latitude)) |>               #Filter missing coords
-#   st_as_sf(                                                    #Filter missing coordinates
-#     coords = c("longitude", "latitude"), 
-#     crs = 4326,
-#     remove = FALSE                                             #--> keep org coord
-#   )
-# 
-# # Spatially join restaurants with geographic places
-# restaurants_with_place <- restaurant_points |>
-#   st_join(
-#     louisiana_places |>
-#       st_transform(st_crs(restaurant_points)) |>
-#       select(GEOID, place_name = NAME),
-#     join = st_within,
-#     left = TRUE
-#   )
-# 
-# # Count restaurants by Yelp city and geographic place
-# restaurants_with_place |>
-#   st_drop_geometry() |>
-#   count(place_name, sort = TRUE)
-# 
-# # Graphing
-# new_orleans_boundary <- louisiana_places |>
-#   filter(NAME == "New Orleans")
-# 
-# 
-# ggplot() +
-#   geom_sf(data = new_orleans_boundary, fill = "grey95", color = "grey35") +
-#   geom_sf(
-#     data = restaurants_with_place,
-#     aes(color = review_count),
-#     alpha = 0.65,
-#     size = 1
-#   ) +
-#   scale_color_viridis_c(option = "C", limits = c(1, 5)) +
-#   labs(
-#     title = "Yelp Restaurants Located Within New Orleans",
-#   ) +
-#   theme_minimal()
-
-
-# Geography analysis ===========================================================
 
 # Census Tract
 la_tracts <- tigris::tracts(
@@ -96,6 +70,9 @@ louisiana_zctas <- tigris::zctas(
       st_transform(st_crs(louisiana_places))
   )
 
+
+# Geography Analysis ===========================================================
+# A. Function to map and summarize restaurants data for the specified geo area
 map_restaurants <- function(
     restaurants,
     boundaries,
@@ -105,7 +82,7 @@ map_restaurants <- function(
     min_restaurants = 5
 ) {
   
-  # 1. Convert restaurant coordinates into spatial points
+  # 1.Convert restaurant coordinates into spatial points
   restaurant_points <- restaurants |>
     filter(!is.na(longitude), !is.na(latitude)) |>
     st_as_sf(
@@ -114,7 +91,7 @@ map_restaurants <- function(
       remove = FALSE
     )
   
-  # 2. Transform geo boundaries to match restaurant CRS
+  # 2.Transform geo boundaries to match restaurant CRS
   boundaries <- boundaries |>
     st_transform(st_crs(restaurant_points)) |>
     rename(
@@ -123,7 +100,7 @@ map_restaurants <- function(
     )
   
   
-  # 3. Spatially join restaurants with geographic areas
+  # 3.Spatially join restaurants with geographic areas
   restaurants_with_area <- restaurant_points |>
     st_join(
       boundaries |>
@@ -133,19 +110,15 @@ map_restaurants <- function(
     )
   
   
-  # 4. Count restaurants and calculate ratings by geographic area
+  # 4a.Summarize restaurants and reviews for each boundary area defined by the geo system
   area_summary <- restaurants_with_area |>
     st_drop_geometry() |>
     filter(!is.na(area_id)) |>
     group_by(area_id, area_name) |>
     summarise(
       n_restaurants = n_distinct(business_id),
-      
-      avg_rating = if (all(is.na(stars))) {
-        NA_real_
-      } else {
-        mean(stars, na.rm = TRUE)
-      },
+      avg_rating = mean(stars, na.rm = TRUE),
+      median_rating = median(stars, na.rm = TRUE),
       
       weighted_rating = {
         valid <- !is.na(stars) &
@@ -161,88 +134,80 @@ map_restaurants <- function(
           NA_real_
         }
       },
-      
       .groups = "drop"
     )
   
-  # Include geographic areas with zero restaurants
-  area_summary <- boundaries |>
-    st_drop_geometry() |>
-    select(area_id, area_name) |>
-    left_join(
-      area_summary,
+  # 4b.Update area_summary to include geographic areas with zero restaurants
+  area_summary <- boundaries |>                                #original boundary table
+    left_join(                                                 #left join area_summary table above ...
+      area_summary,                                            # ... to pull in restaurants summary data for all areas in the boundary system
       by = c("area_id", "area_name")
     ) |>
     mutate(
-      n_restaurants = replace_na(n_restaurants, 0L)
+      n_restaurants = replace_na(n_restaurants, 0L),           #area w/ no restaurant: enter value 0
+      area_sqmi = as.numeric(st_area(geometry)) / 2589988.11,  #calc the area metric
+      restaurants_per_sqmi = if_else(                          #restaurant density (# of rest / sq.mi.)
+        n_restaurants > 0 & area_sqmi > 0,
+        n_restaurants / area_sqmi,
+        NA_real_
+      )
     )
   
   
-  # 5. Evaluate geographic coverage
-  total_restaurants <- n_distinct(restaurants$business_id)
   
-  missing_coords <- total_restaurants -
-    n_distinct(restaurant_points$business_id)
-  
+  # 5a.Geography system summary: Evaluate geographic coverage
   coverage <- restaurants_with_area |>
     st_drop_geometry() |>
     summarise(
-      matched = n_distinct(
+      total_restaurants = n_distinct(restaurants$business_id), #total # of restaurants
+      
+      restaurants_w_missing_coord = total_restaurants -        #Num of rests can't be mapped to a coordinate
+        n_distinct(restaurant_points$business_id),
+      
+      matched_restaurants = n_distinct(                        #Num of rests mapped to a specified boundary area
         business_id[!is.na(area_id)]
       ),
-      unmatched = n_distinct(
+      unmatched_restaurants = n_distinct(                      #Num of rests not mapped to any boundary area
         business_id[is.na(area_id)]
       )
-    ) |>
-    mutate(
-      total_restaurants = total_restaurants,
-      missing_coordinates = missing_coords,
-      match_rate = round(
-        100 * matched / total_restaurants,
-        2
-      )
     )
   
   
-  # 6. Evaluate sample size by area
-  sample_size <- area_summary |>
+  # 5b.Geography system summary: Evaluate sample size by geography system + coverage
+  geo_system_summary <- area_summary |>
     summarise(
-      total_areas = n(),
-      empty_areas = sum(n_restaurants == 0),
-      sparse_areas = sum(
-        n_restaurants > 0 &
-          n_restaurants < min_restaurants
+      # Statistics on the boundary areas of the geo system
+      total_areas = n(),                                             #Num of boundary areas in this geo system
+      avg_sqmi = mean(area_sqmi),
+      median_sqmi = median(area_sqmi),
+      empty_areas = sum(n_restaurants == 0),                         #Num of areas with no restaurants w/ selected categories
+      
+      # Statistics on restaurant density
+      min_density = min(restaurants_per_sqmi, na.rm = TRUE),
+      q25_density = quantile(restaurants_per_sqmi, 0.25, na.rm = TRUE),
+      median_density = median(restaurants_per_sqmi, na.rm = TRUE),
+      mean_density = mean(restaurants_per_sqmi, na.rm = TRUE),
+      q75_density = quantile(restaurants_per_sqmi, 0.75, na.rm = TRUE),
+      max_density = max(restaurants_per_sqmi, na.rm = TRUE),
+      
+      sparse_areas = sum(                                            #Num of areas with low number of restaurants w selected categories
+        restaurants_per_sqmi > 0 &
+        restaurants_per_sqmi < median_density,
+        na.rm = TRUE
       ),
-      median_restaurants = median(n_restaurants[n_restaurants > 0]),
-      mean_restaurants = mean(n_restaurants[n_restaurants > 0]),
-      min_restaurants = min(n_restaurants[n_restaurants > 0]),
-      max_restaurants = max(n_restaurants[n_restaurants > 0])
-    )
-  
-  # Identify areas with few restaurants
-  sparse_areas <- area_summary |>
-    filter(
-      n_restaurants > 0,
-      n_restaurants < min_restaurants
+      
+      # Statistics on number of restaurants in a boundary
+      min_restaurants = min(n_restaurants[n_restaurants > 0]),                    #Min
+      q25_restaurants = quantile(n_restaurants[n_restaurants > 0], probs = 0.25), #25th quantile
+      median_restaurants = median(n_restaurants[n_restaurants > 0]),              #Med
+      mean_restaurants = mean(n_restaurants[n_restaurants > 0]),                  #Avg
+      q25_restaurants = quantile(n_restaurants[n_restaurants > 0], probs = 0.75), #75th quantile
+      max_restaurants = max(n_restaurants[n_restaurants > 0])                     #Max
     ) |>
-    arrange(n_restaurants)
+    bind_cols(coverage)
   
   
-  # 7. Join summary statistics back to boundaries
-  boundary_summary <- boundaries |>
-    left_join(
-      area_summary |>
-        select(
-          area_id,
-          n_restaurants,
-          avg_rating,
-          weighted_rating
-        ),
-      by = "area_id"
-    )
-  
-  
-  # 8a. Restaurant location map
+  # 6a. Map: Restaurant location map
   location_map <- ggplot() +
     geom_sf(
       data = boundaries,
@@ -266,8 +231,8 @@ map_restaurants <- function(
     theme_minimal()
   
   
-  # 8b. Restaurant count map
-  count_map <- ggplot(boundary_summary) +
+  # 6b. Map: Restaurant count map
+  count_map <- ggplot(area_summary) +
     geom_sf(
       aes(fill = n_restaurants),
       color = "white",
@@ -283,8 +248,8 @@ map_restaurants <- function(
     theme_minimal()
   
   
-  # 8c. Average rating map
-  rating_map <- ggplot(boundary_summary) +
+  # 6c. Average rating map
+  rating_map <- ggplot(area_summary) +
     geom_sf(
       aes(fill = avg_rating),
       color = "white",
@@ -302,21 +267,18 @@ map_restaurants <- function(
     theme_minimal()
   
   
-  # 9. Return results
+  # 7. Return results
   list(
     restaurants = restaurants_with_area,
-    summary = area_summary,
-    coverage = coverage,
-    sample_size = sample_size,
-    sparse_areas = sparse_areas,
-    boundaries = boundary_summary,
+    area_summary = area_summary,
+    geo_system_summary = geo_system_summary,
     location_map = location_map,
     count_map = count_map,
     rating_map = rating_map
   )
 }
 
-
+# B. Call the functions for various geo areas
 tracts_result <- map_restaurants(
   restaurants = selected_businesses,
   boundaries = la_tracts,
@@ -341,17 +303,15 @@ zip_result <- map_restaurants(
   map_title = "New Orleans Postal Code"
 )
 
-# Counts
-tracts_result$summary |>
-  filter(n_restaurants > 2)
-
-neighborhood_result$summary |>
-  filter(n_restaurants > 2)
-
-zip_result$summary |>
-  filter(n_restaurants > 2)
-
-
-# Maps
-tracts_result$location_map
-tracts_result$count_map
+# Results ======================================================================
+# tracts_result$geo_system_summary
+# tracts_result$area_summary |>
+#   filter(n_restaurants > 4)
+# 
+# neighborhood_result$geo_system_summary
+# neighborhood_result$area_summary |>
+#   filter(n_restaurants > 3)
+# 
+# zip_result$geo_system_summary
+# zip_result$area_summary |>
+#   filter(n_restaurants > 4)

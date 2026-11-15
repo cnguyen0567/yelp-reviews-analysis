@@ -1,12 +1,14 @@
 # Install package ==============================================================
 required_packages <- c(
-  "tidyverse",
+  "tidyverse",             #include: dplyr, stringr, ggplot2, tibble, tidyr
   "jsonlite",
   "lubridate",
   "sf",
   "tigris",
   "scales",
-  "viridis"
+  "viridis",
+  "patchwork",
+  "knitr"
 )
 
 for (pkg in required_packages) {

@@ -5,3 +5,4 @@
 resources/
 data/raw
 data/new_orleans/reviews_new_orleans.rds
+scripts/old
