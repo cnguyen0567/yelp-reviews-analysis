@@ -10,7 +10,10 @@ required_packages <- c(
   "patchwork",
   "knitr",
   "DT",
-  "ggiraph"
+  "ggiraph",
+  "DBI",
+  "duckdb",
+  "ggupset"
 )
 
 for (pkg in required_packages) {

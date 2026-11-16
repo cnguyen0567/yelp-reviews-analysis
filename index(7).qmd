@@ -1,0 +1,1149 @@
+---
+title: "Finding Best Vegetarian-Friendly Dining in New Orleans"
+subtitle: "A Yelp Open Dataset portfolio project: Identifying, locating, and comparing vegetarian-friendly restaurants in New Orlean, Louisiana"
+author: "Chau Nguyen"
+date: last-modified
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 2
+    toc-location: left
+    code-fold: true
+    code-summary: "Show code"
+    code-tools: true
+    df-print: kable
+    embed-resources: true
+    fig-align: center
+execute:
+  warning: false
+  message: false
+---
+
+```{=html}
+<style>
+.kpi-row { display: flex; gap: 1rem; flex-wrap: wrap; margin: 1.25rem 0 1.5rem; }
+.kpi { flex: 1 1 140px; border: 1px solid #dee2e6; border-radius: 8px; padding: .75rem 1rem; background: #f8f9fa; }
+.kpi .num { font-size: 1.8rem; font-weight: 700; line-height: 1.1; color: #2c3e50; }
+.kpi .lbl { font-size: .85rem; color: #6c757d; }
+.result-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1rem 0 .5rem; }
+.result-card { min-width: 0; display: flex; flex-direction: column; border: 1px solid #dee2e6; border-top: 5px solid var(--accent); border-radius: 8px; overflow: hidden; background: #fff; }
+.accent-count  { --accent: #6a51a3; }
+.accent-top10  { --accent: #ffb000; }
+.accent-rating { --accent: #2ca25f; }
+.result-head { padding: .75rem 1rem .4rem; }
+.result-head p { margin: 0; }
+.result-head .eyebrow { display: block; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: #6c757d; }
+.result-head .zip { display: block; font-size: 2rem; font-weight: 700; line-height: 1.15; color: var(--accent); }
+.result-head .detail { display: block; font-size: .9rem; color: #495057; line-height: 1.35; }
+.result-map { margin-top: auto; padding: 0 .4rem .4rem; }
+.result-map .cell, .result-map .cell-output-display { margin: 0; }
+.result-map .html-widget, .result-map .girafe_container_std, .result-map svg { width: 100% !important; height: auto !important; max-width: none !important; }
+@media (max-width: 900px) { .result-grid { grid-template-columns: 1fr; } }
+.decision { border-left: 4px solid #2780e3; padding: .5rem 1rem; background: #f1f7fe; margin: 1rem 0; }
+</style>
+```
+
+```{r}
+#| label: setup
+#| include: false
+
+# Shared libraries, file paths, and the selected categories
+source("scripts/config.R")
+
+# Loads filtered data, builds the selected subsets, and runs the spatial joins
+# for ZIP/ZCTA, census tract, and Neighborhood Statistical Area boundaries.
+source("scripts/geography_analysis.R")
+source("scripts/categories_analysis.R")
+source("scripts/ratings_analysis.R")
+
+# TODO: replace with your GitHub repository URL
+repo <- "https://github.com/USERNAME/REPOSITORY/blob/main"
+
+results <- list(
+  "ZIP/ZCTA" = zip_result,
+  "Census tract" = tracts_result,
+  "Neighborhood Statistical Area" = neighborhood_result
+)
+
+# Headline numbers used throughout the report
+n_nola_restaurants      <- n_distinct(business_loaded$business_id)
+n_nola_reviews          <- nrow(review_loaded)
+n_selected_restaurant   <- n_distinct(selected_businesses$business_id)
+n_selected_reviews <- nrow(selected_reviews)
+n_reviewers        <- n_distinct(selected_reviews$user_id)
+n_categories       <- nrow(category_counts)
+
+```
+
+```{r}
+#| label: summary-data
+#| include: false
+
+# ---- Shared map extent (used by every map in the report) ----
+# Zoom every map to the same box around the restaurants (plus a small margin),
+# so all three panels show the same area and can be compared side by side.
+all_points <- do.call(c, lapply(results, \(r) st_geometry(st_transform(r$restaurants, 4326))))
+bb       <- st_bbox(all_points)
+pad      <- 0.08                                    # 8% margin on each side
+x_span   <- bb[["xmax"]] - bb[["xmin"]]
+y_span   <- bb[["ymax"]] - bb[["ymin"]]
+map_xlim <- c(bb[["xmin"]] - pad * x_span, bb[["xmax"]] + pad * x_span)
+map_ylim <- c(bb[["ymin"]] - pad * y_span, bb[["ymax"]] + pad * y_span)
+
+# Canvas shape that matches the zoomed box (longitude degrees shrink by cos(latitude))
+map_aspect <- diff(map_ylim) / (diff(map_xlim) * cos(mean(map_ylim) * pi / 180))
+
+# ---- Rating numbers (used in the Executive Summary and section 4) ----
+
+# Inline numbers for the narrative below (all computed, nothing typed by hand)
+ret_all  <- reviewer_retention |> filter(group == "All reviewers")
+ret_elig <- reviewer_retention |> filter(group == "Eligible reviewers")
+
+one_review <- eligible_adjusted_reviews |>
+  distinct(user_id, reviewer_review_count) |>
+  summarise(
+    n_reviewers = n(),
+    n_one       = sum(reviewer_review_count == 1)
+  ) |>
+  mutate(pct_one = n_one / n_reviewers)
+
+n_ranked_all    <- sum(!is.na(restaurant_ratings$rank_all))
+n_ranked_adj    <- sum(!is.na(restaurant_ratings$rank_adjusted))
+n_top10_overlap <- sum(top10_adjusted$business_id %in% top10_all$business_id)
+
+both_ranked <- restaurant_ratings |>
+  filter(!is.na(rank_all), !is.na(rank_adjusted))
+rank_cor <- cor(both_ranked$rank_all, both_ranked$rank_adjusted, method = "spearman")
+
+med_elig_moved  <- median(biggest_rank_changes$n_reviews_eligible, na.rm = TRUE)
+med_elig_ranked <- median(both_ranked$n_reviews_eligible, na.rm = TRUE)
+
+rankable_zips  <- zip_ratings |> filter(rankable)
+best_zip_all   <- rankable_zips |> slice_min(rank_all, n = 1, with_ties = FALSE)
+best_zip_adj   <- rankable_zips |> slice_min(rank_adjusted, n = 1, with_ties = FALSE)
+most_top10_zip <- zip_ratings |> slice_max(n_top10_adjusted, n = 1, with_ties = FALSE)
+
+most_restaurants_zip <- zip_result$area_summary |>
+  st_drop_geometry() |>
+  slice_max(n_restaurants, n = 1, with_ties = FALSE)
+
+# ---- Final ZIP map (section 4.2, reused in the Executive Summary) ----
+zip_map_data <- zip_result$area_summary |>
+  select(area_id) |>
+  left_join(
+    zip_ratings |>
+      select(area_id, area_name, n_restaurants, mean_stars_all,
+             mean_normalized, rankable, rank_adjusted),
+    by = "area_id"
+  ) |>
+  mutate(
+    fill_value = if_else(coalesce(rankable, FALSE), mean_normalized, NA_real_),
+    tooltip = if_else(
+      is.na(area_name), "No selected restaurants",
+      paste0("ZIP ", area_name,
+             "\nRestaurants: ", n_restaurants,
+             "\nAvg stars (all): ", sprintf("%.2f", mean_stars_all),
+             "\nAvg normalized: ", sprintf("%+.3f", mean_normalized),
+             if_else(coalesce(rankable, FALSE),
+                     paste0("\nAdjusted rank: ", rank_adjusted), "\nNot ranked"))
+    )
+  )
+
+top10_points <- top10_adjusted |>
+  mutate(tooltip = paste0("#", rank_adjusted, " ", business_name,
+                          "\nZIP ", area_name,
+                          "\nAvg stars (all): ", sprintf("%.2f", mean_stars_all),
+                          "\nAvg normalized: ", sprintf("%+.3f", mean_normalized),
+                          "\nEligible reviews: ", n_reviews_eligible))
+
+final_map <- ggplot() +
+  geom_sf_interactive(
+    data = zip_map_data,
+    aes(fill = fill_value, tooltip = tooltip, data_id = area_id),
+    color = "grey60", linewidth = 0.3
+  ) +
+  scale_fill_gradient2(
+    low = "#d7301f", mid = "#f7f7f7", high = "#1a4f8b", midpoint = 0,
+    na.value = "grey90", name = "Avg normalized\nscore"
+  ) +
+  geom_point_interactive(
+    data = top10_points,
+    aes(longitude, latitude, tooltip = tooltip, data_id = business_id),
+    shape = 21, fill = "#ffb000", color = "black", size = 4.5, stroke = 0.4
+  ) +
+  geom_text(
+    data = top10_points,
+    aes(longitude, latitude, label = rank_adjusted),
+    size = 2.5, fontface = "bold"
+  ) +
+  coord_sf(
+    xlim = map_xlim,
+    ylim = map_ylim,
+    default_crs = st_crs(4326),
+    expand = FALSE
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_minimal()
+
+
+# ---- Executive Summary maps ----
+zip_sf <- zip_result$area_summary |>
+  select(area_id, area_name, n_restaurants) |>
+  left_join(
+    zip_ratings |>
+      select(area_id, mean_stars_all, rankable, rank_all),
+    by = "area_id"
+  )
+
+# Bold outline for the winning ZIP, same extent and look for all three cards
+highlight_zip <- function(id) {
+  geom_sf(data = filter(zip_sf, area_id == id),
+          fill = NA, color = "#111111", linewidth = 1.1)
+}
+summary_theme <- list(
+  coord_sf(xlim = map_xlim, ylim = map_ylim, default_crs = st_crs(4326), expand = FALSE),
+  theme_void(),
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 9),
+    legend.text  = element_text(size = 8),
+    legend.key.height = unit(0.3, "cm"),
+    legend.key.width  = unit(1.4, "cm"),
+    plot.margin = margin(0, 0, 4, 0)
+  )
+)
+summary_widget <- function(p) {
+  girafe(ggobj = p, width_svg = 5, height_svg = 5 * map_aspect + 0.7,
+         options = list(opts_sizing(rescale = TRUE)))
+}
+
+# 1) Number of vegetarian-friendly restaurants per ZIP
+map_count <- ggplot() +
+  geom_sf_interactive(
+    data = zip_sf,
+    aes(fill = if_else(n_restaurants > 0, n_restaurants, NA),
+        tooltip = paste0("ZIP ", area_name, "\nRestaurants: ", coalesce(n_restaurants, 0)),
+        data_id = area_id),
+    color = "white", linewidth = 0.3
+  ) +
+  scale_fill_gradient(low = "#efedf5", high = "#54278f", na.value = "grey90",
+                      name = "Restaurants") +
+  highlight_zip(most_restaurants_zip$area_id) +
+  summary_theme
+
+# 2) Reviewer-adjusted map with top-10 points (the section 4.2 map)
+map_top10 <- final_map +
+  highlight_zip(most_top10_zip$area_id) +
+  summary_theme +
+  labs(fill = "Avg normalized score")
+
+# 3) Average Yelp stars per ZIP (ranked ZIPs only)
+map_rating <- ggplot() +
+  geom_sf_interactive(
+    data = zip_sf,
+    aes(fill = if_else(coalesce(rankable, FALSE), mean_stars_all, NA),
+        tooltip = if_else(coalesce(rankable, FALSE),
+                          paste0("ZIP ", area_name, "\nAvg stars: ", sprintf("%.2f", mean_stars_all),
+                                 "\nRank: ", rank_all),
+                          paste0("ZIP ", area_name, "\nNot ranked")),
+        data_id = area_id),
+    color = "white", linewidth = 0.3
+  ) +
+  scale_fill_gradient(low = "#e5f5e0", high = "#006d2c", na.value = "grey90",
+                      name = "Avg stars") +
+  highlight_zip(best_zip_all$area_id) +
+  summary_theme
+```
+
+# Executive summary
+## Analysis Results
+
+Where can a visitor find the best vegetarian-friendly restaurants in New Orleans, and which neighborhood is the best bet for finding them?
+
+:::::: {.column-page}
+::::: {.result-grid}
+
+:::: {.result-card .accent-count}
+::: {.result-head}
+[Most options]{.eyebrow}
+[`r most_restaurants_zip$area_name`]{.zip}
+[`r most_restaurants_zip$n_restaurants` vegetarian-friendly restaurants, the most of any ZIP code]{.detail}
+:::
+::: {.result-map}
+```{r}
+#| label: summary-map-count
+#| echo: false
+summary_widget(map_count)
+```
+:::
+::::
+
+:::: {.result-card .accent-top10}
+::: {.result-head}
+[Most top-10 restaurants]{.eyebrow}
+[`r most_top10_zip$area_name`]{.zip}
+[`r most_top10_zip$n_top10_adjusted` of the 10 best restaurants after adjusting for reviewer habits (numbered points)]{.detail}
+:::
+::: {.result-map}
+```{r}
+#| label: summary-map-top10
+#| echo: false
+summary_widget(map_top10)
+```
+:::
+::::
+
+:::: {.result-card .accent-rating}
+::: {.result-head}
+[Highest rated]{.eyebrow}
+[`r best_zip_all$area_name`]{.zip}
+[`r sprintf("%.2f", best_zip_all$mean_stars_all)` average Yelp stars, the highest of the `r nrow(rankable_zips)` ranked ZIP codes]{.detail}
+:::
+::: {.result-map}
+```{r}
+#| label: summary-map-rating
+#| echo: false
+summary_widget(map_rating)
+```
+:::
+::::
+
+:::::
+::::::
+
+The outlined ZIP code on each map is the winner for that measure. Hover over any area or point for details.
+
+## Scope of Analysis
+
+::: {.kpi-row}
+::: {.kpi}
+[`r comma(n_nola_restaurants)`]{.num}
+[New Orleans restaurants on Yelp]{.lbl}
+:::
+::: {.kpi}
+[`r comma(n_selected_restaurant)`]{.num}
+[vegetarian-friendly restaurants analyzed with categories contains *Vegetarian*, *Vegan*, *Falafel*, and *Bagels*]{.lbl}
+:::
+::: {.kpi}
+[`r comma(n_selected_reviews)`]{.num}
+[reviews for those restaurants]{.lbl}
+:::
+::: {.kpi}
+[9]{.num}
+[*New Orleans Neighborhood Statistical Areas* compared]{.lbl}
+:::
+:::
+
+
+# Analysis
+## 1. Location Selection
+
+The businesses included in this analysis are restaurants located in New Orleans, Louisiana, that are still operating. See the Appendix for additional details. The following sections further narrow the dataset based on specific criteria.
+
+
+## 2. Category Selection
+
+
+`r n_categories` distinct categories, across `r comma(n_nola_restaurants)` restaurants, were individually reviewed for:
+<p align="center"><em>Does the label reasonably signal that a vegetarian would reliably find a meal there?</em></p>
+Four categories were selected, shown in the table below. Since one label is sufficient to indicate the availability of vegetarian-friendly menu, a restaurant qualifies if at least one of its categories matches a selected label. **This gives `r n_selected_restaurant` restaurants**.
+
+<br>
+
+**Table summary** shows the selected categories and the number of restaurants met the criteria.
+
+```{r}
+#| label: candidates
+
+reasons <- tribble(
+  ~category,       ~Reason,
+  "Vegetarian",    "Direct dietary signal",
+  "Vegan",         "Direct dietary signal; every vegan dish is vegetarian",
+  "Falafel",       "Core menu item is meat-free",
+  "Bagels",        "Menus center on meat-free breakfast items"
+)
+
+# One row per restaurant-category pair
+cat_long <- business_categories_by_row |>
+  distinct(business_id, category)
+
+# How many of the selected labels each restaurant has
+n_sel_per_biz <- cat_long |>
+  filter(category %in% selected_categories) |>
+  count(business_id, name = "n_sel")
+
+cat_table <- cat_long |>
+  filter(category %in% reasons$category) |>
+  left_join(n_sel_per_biz, by = "business_id") |>
+  mutate(
+    n_sel     = coalesce(n_sel, 0L),
+    # selected labels this restaurant has besides the current one
+    other_sel = n_sel - (category %in% selected_categories)
+  ) |>
+  group_by(category) |>
+  summarise(
+    restaurants = n(),
+    only_this   = sum(other_sel == 0),
+    .groups = "drop"
+  ) |>
+  right_join(reasons, by = "category") |>          # keeps a label even if 0 restaurants
+  mutate(across(c(restaurants, only_this), \(x) coalesce(x, 0L))) |>
+  arrange(!category %in% selected_categories, desc(restaurants))
+
+cat_table |>
+  transmute(
+    Category = category,
+    `# of Restaurants` = restaurants,
+    `# of Restaurants Only Has This Label` = only_this,
+    Reason
+  ) |>
+  kable(
+    align = "lrrl",
+    caption = "'Only this label' = restaurants with this label and none of the 4 selected labels besides it"
+  )
+```
+
+<br>
+**Co-occurrence analysis:** Matrix below shows the number of restaurants with overlapping labels (i.e., more than 1 matched category). No restaurants match more than 2 categories.
+
+
+```{r}
+#| label: cooccurrence
+#| fig-width: 5.5
+#| fig-height: 4.5
+#| fig-cap: "Number of restaurants that carry both labels. The diagonal shows each label's total."
+
+cand_levels <- cat_table |>
+  filter(category %in% selected_categories) |>
+  pull(category)                                   # keeps the table's order (largest first)
+
+cand_long <- cat_long |> filter(category %in% cand_levels)
+
+only_counts <- cand_long |>                       #restaurants with only this label
+  add_count(business_id, name = "n_sel") |>
+  filter(n_sel == 1) |>
+  count(category, name = "only_n")
+
+pairs <- cand_long |>
+  inner_join(cand_long, by = "business_id", relationship = "many-to-many") |>
+  count(a = category.x, b = category.y) |>
+  complete(a = cand_levels, b = cand_levels, fill = list(n = 0)) |>
+  left_join(only_counts, by = c("a" = "category")) |>
+  mutate(
+    diag = a == b,
+    n    = if_else(diag, coalesce(only_n, 0L), n),
+    a    = factor(a, cand_levels),
+    b    = factor(b, rev(cand_levels))
+  )
+
+ggplot(pairs, aes(a, b, fill = n)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = n, color = n > max(n) / 2), size = 3.5) +
+  scale_fill_gradient(low = "#f1f7fe", high = "#1a4f8b", guide = "none") +
+  scale_color_manual(values = c(`FALSE` = "grey20", `TRUE` = "white"), guide = "none") +
+  labs(x = NULL, y = NULL) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+```
+
+
+## 3. Geography Selection
+
+All `r comma(n_selected_restaurant)` restaurants were evaluated across three geographic systems—ZIP/ZCTA, census tract, and Neighborhood Statistical Area. The comparison below aligns each system's map and interpretation. Boundary sources are documented in Appendix 4. Areas with at least four restaurants are shaded in light blue; dark-blue points show restaurant locations. Hover over a shaded area to view its name, restaurant count, and average Yelp rating.
+
+::: {.decision}
+**Decision:** ZIP/ZCTA areas were selected as the final geographic system because they cover essentially all of the open restaurants, distribute the restaurants relatively evenly across comparison areas, and are easy for visitors and residents to locate. Because ZIP codes can encompass multiple neighborhoods, a ZIP-to-neighborhood lookup or map can be used to make the results more intuitive.
+::: 
+
+```{=html}
+<style>
+/* Comparison grid: Quarto's .column-page widens it inside the page layout,
+   so it never spills past the left TOC or the window edge. */
+.geo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid #ced4da;
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 1rem 0 1.5rem;
+}
+.geo-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #ced4da;
+}
+.geo-card:last-child { border-right: 0; }
+.geo-title {
+  padding: .45rem .75rem;
+  font-weight: 600;
+  background: #f8f9fa;
+  border-bottom: 1px solid #ced4da;
+}
+.geo-title p { margin: 0; }
+.geo-map {
+  padding: .25rem;
+  border-bottom: 1px solid #ced4da;
+}
+.geo-map .cell,
+.geo-map .cell-output-display,
+.geo-map .quarto-figure { margin: 0; }
+.geo-map .html-widget,
+.geo-map .girafe_container_std,
+.geo-map svg {
+  width: 100% !important;
+  height: auto !important;
+  max-width: none !important;
+}
+.geo-explanation {
+  flex: 1;
+  padding: .6rem .75rem;
+  font-size: .9rem;
+  line-height: 1.4;
+}
+.geo-explanation p:last-child { margin-bottom: 0; }
+@media (max-width: 900px) {
+  .geo-grid { grid-template-columns: 1fr; }
+  .geo-card { border-right: 0; border-bottom: 1px solid #ced4da; }
+  .geo-card:last-child { border-bottom: 0; }
+}
+</style>
+```
+
+```{r}
+#| label: geographic-map-function
+#| include: false
+
+make_map <- function(result, title) {
+  ggplot() +
+    geom_sf_interactive(
+      data = result$area_summary,
+      aes(
+        fill = n_restaurants > 3,
+        tooltip = paste0(
+          area_name,
+          "\nRestaurants: ", n_restaurants,
+          "\nAverage Yelp rating: ",
+          ifelse(is.na(avg_rating), "N/A", sprintf("%.2f", avg_rating))
+        )
+      ),
+      color = "grey60",
+      linewidth = 0.3
+    ) +
+    scale_fill_manual(
+      values = c("FALSE" = "gray90", "TRUE" = "#d4ebf2"),
+      labels = c("0–3", "4+"),
+      name = "Number of Restaurants"
+    ) +
+    geom_sf(
+      data = result$restaurants,
+      color = "darkblue",
+      alpha = 0.5,
+      size = 1
+    ) +
+    coord_sf(
+      xlim = map_xlim,
+      ylim = map_ylim,
+      default_crs = st_crs(4326),
+      expand = FALSE
+    ) +
+    theme_void() +
+    theme(
+      legend.position = "none",
+      plot.margin = margin(0, 0, 0, 0),
+      panel.border = element_rect(
+        color = if (title == "ZIP/ZCTA") "#2ca25f" else NA,
+        fill = NA,
+        linewidth = if (title == "ZIP/ZCTA") 1.5 else 0
+      )
+    )
+}
+
+# Canvas matches the map's shape, so the map fills its column with no empty bands
+map_widget <- function(result, title) {
+  girafe(
+    ggobj = make_map(result, title),
+    width_svg = 5,
+    height_svg = 5 * map_aspect,
+    options = list(opts_sizing(rescale = TRUE))
+  )
+}
+```
+
+:::::: {.column-page}
+::::: {.geo-grid}
+
+:::: {.geo-card}
+::: {.geo-title}
+ZIP/ZCTA
+:::
+::: {.geo-map}
+```{r}
+#| label: geographic-map-zip
+#| echo: false
+map_widget(zip_result, "ZIP/ZCTA")
+```
+:::
+::: {.geo-explanation}
+**Interpretation.** ZIP/ZCTA areas distribute the restaurants more evenly and support comparison across several areas. Although ZIP codes are administrative units, they are easy to search and identify on a map. They also correspond reasonably well with the neighborhoods familiar to New Orleans residents. A ZIP-to-neighborhood lookup can therefore make the results more intuitive for visitors and residents.
+:::
+::::
+
+:::: {.geo-card}
+::: {.geo-title}
+Census Tract
+:::
+::: {.geo-map}
+```{r}
+#| label: geographic-map-tract
+#| echo: false
+map_widget(tracts_result, "Census tract")
+```
+:::
+::: {.geo-explanation}
+**Interpretation.** Census tracts are relatively small and granular. Many areas contain only one or two selected restaurants, while a small number of concentrated areas, mainly around the French Quarter and Business District, contain substantially more. This makes tract-level density sensitive to boundary size and less useful for a visitor-facing comparison. Only four census tracts have at least four restaurants, which does not provide enough populated areas for comparison without combining tracts.
+:::
+::::
+
+:::: {.geo-card}
+::: {.geo-title}
+Neighborhood Statistical Area
+:::
+::: {.geo-map}
+```{r}
+#| label: geographic-map-neighborhood
+#| echo: false
+map_widget(neighborhood_result, "Neighborhood Statistical Area")
+```
+:::
+::: {.geo-explanation}
+**Interpretation.** Neighborhood Statistical Areas are recognizable and useful for location-based decisions, but they are less evenly populated with restaurants. They also require additional grouping when restaurants cluster near neighboring boundaries. For example, the restaurant at the far-right edge of Audubon is closer to restaurants in Leonidas than to the rest of the restaurants in Audubon. Grouping could therefore split restaurants in a way that does not reflect proximity. ZIP/ZCTA areas provide a more consistent boundary for this dataset, while a ZIP-to-neighborhood lookup can still support interpretation.
+:::
+::::
+
+:::::
+::::::
+
+
+## 4. Rating Analysis
+
+A plain Yelp average treats every star the same, but some reviewers give almost everything five stars while others rarely do. Ratings were therefore ranked two ways:
+
+1. **All reviewers:** the ordinary average star rating.
+2. **Reviewer-adjusted:** only reviewers with at least **`r min_reviewer_reviews` lifetime Yelp reviews** (`r percent(ret_elig$pct_reviewers, accuracy = 0.1)` of reviewers, writing `r percent(ret_elig$pct_reviews, accuracy = 0.1)` of reviews). Each review is scored as *stars given − that reviewer's average stars*, so +1 means "one star better than this person usually gives."
+
+Method details, threshold checks, and limitations are in Appendix 3.
+
+### 4.1 Top 10 restaurants
+
+`r n_top10_overlap` of the 10 restaurants appear on both lists, and the rank correlation across all `r nrow(both_ranked)` restaurants ranked both ways is `r sprintf("%.2f", rank_cor)`.
+
+```{r}
+#| label: top10-compare
+
+fmt_top10 <- function(df, score, digits) {
+  df |>
+    mutate(pos = row_number()) |>
+    transmute(
+      pos,
+      Restaurant = business_name,
+      ZIP        = area_name,
+      Score      = round({{ score }}, digits)
+    )
+}
+
+full_join(
+  fmt_top10(top10_all, mean_stars_all, 2),
+  fmt_top10(top10_adjusted, mean_normalized, 3),
+  by = "pos", suffix = c(" (all)", " (adj.)")
+) |>
+  rename(Rank = pos,
+         `Avg stars (all)` = `Score (all)`,
+         `Avg normalized (adj.)` = `Score (adj.)`) |>
+  kable(
+    align = "rllrllr",
+    caption = "Top 10 by average stars from all reviewers (left) and by average normalized score from eligible reviewers (right)"
+  )
+```
+
+### 4.2 Best ZIP code
+
+`r if (best_zip_all$area_id == best_zip_adj$area_id) paste0("**", best_zip_adj$area_name, "** ranks first under both methods.") else paste0("The leading ZIP code changes after adjustment: **", best_zip_all$area_name, "** ranks first on plain star averages, but **", best_zip_adj$area_name, "** ranks first once reviewer habits are accounted for.")` ZIP **`r most_top10_zip$area_name`** contains the most adjusted top-10 restaurants (`r most_top10_zip$n_top10_adjusted`).
+
+```{r}
+#| label: final-map
+#| fig-cap: "Reviewer-adjusted ZIP scores and locations of the top 10 vegetarian-friendly restaurants"
+
+# final_map is built in the summary-data chunk at the top of the report
+girafe(ggobj = final_map, width_svg = 8, height_svg = 8 * map_aspect)
+```
+
+::: {.decision}
+**Takeaway:** Start in ZIP **`r best_zip_adj$area_name`** for the most reliably well-rated vegetarian-friendly options; the numbered points above are the 10 best individual bets after adjusting for reviewer habits.
+:::
+
+
+# Appendix
+## 1. Data and large-file handling
+
+**Data Source:** [Yelp Open Dataset](https://business.yelp.com/data/resources/open-dataset/)
+
+**Rebuild steps** (`scripts/import.R`)
+
+1. **Download and unzip.** Unzip the entire archive, then move the three JSON files into the raw data folder.
+2. **Business:**
+    - read with `jsonlite::stream_in()`.
+      ```{r}
+      #| eval: false
+      #| code-summary: "Business import"
+      business_raw <- jsonlite::stream_in(file(business_raw_json), verbose = FALSE)
+      # ...
+      ```
+    - Standardize "City", "Business", and "Categories" fields.
+      ```{r}
+      #| eval: false
+      #| code-summary: "Business clean up"
+      business_clean <- business |>
+          mutate(
+            city_standardized = case_when(  # Standardize the city field
+              city %in% c(
+                "New Orlaens",
+                "French Quarter",
+                "French Quarter - CBD"
+              ) ~ "New Orleans",
+              TRUE ~ city
+            ) |>
+              str_to_lower() |>
+              str_remove_all("\\s+"),
+        
+            postal_code = na_if(postal_code, ""),  # Convert blank ZIP codes to NA
+            categories = str_squish(categories),   # Remove extra whitespace
+            business_name = str_squish(name)       # Standardize business names
+          )
+      # ...
+      ```
+    - Filter for city == "New Orleans" (using the standardized field), still open, and categories containing "Restaurants" to remove un-needed data
+      ```{r}
+      #| eval: false
+      #| code-summary: "Business filter"
+      new_orleans_restaurants <- business_clean |>          
+          filter(
+            state == "LA",
+            city_standardized == "neworleans",
+            is_open == 1,
+            !is.na(categories),
+            str_detect(categories, regex("Restaurants", ignore_case = TRUE))
+          ) |>
+          distinct(business_id, .keep_all = TRUE)      #remove duplicate business_id row
+      # ...
+      ```
+
+3. **Reviews:** Read and simultaneously filter for reviews of businesses in New Orleans with DuckDB and SQL Join
+```{r}
+#| eval: false
+#| code-summary: "Review import"
+# 1. create the restaurant ID list
+restaurant_ids <- new_orleans_restaurants |> select(business_id)
+
+# 2. Load only the IDs into DuckDB
+con <- dbConnect(duckdb::duckdb())
+
+dbWriteTable(
+  con,
+  "restaurant_ids",
+  restaurant_ids,
+  temporary = TRUE
+)
+
+# 3. Query the rest of the data
+review_path_sql <- as.character(
+  dbQuoteString(con, normalizePath(review_raw_json))
+)
+
+query <- paste0(      #query statement only select reviews for NOLA businesses
+  "
+  SELECT
+    r.business_id,
+    r.review_id,
+    r.user_id,
+    r.stars,
+    r.date,
+    r.text,
+    r.useful,
+    r.funny,
+    r.cool
+  FROM read_json_auto(
+    ", review_path_sql, ",
+    format = 'newline_delimited'
+  ) AS r
+  SEMI JOIN restaurant_ids AS i
+    USING (business_id)
+  "
+)
+
+new_orleans_reviews <- dbGetQuery(con, query)
+
+# 4. Close the connection
+dbDisconnect(con, shutdown = TRUE)
+gc()
+# ...
+```
+
+4. **Users:** Same DuckDB method. Only keep the user IDs from the reviews list above. Three fields, `useful`, `funny`, and `cool`, are sum up into 1 single `vote_count` field
+5. **Save and clean up.** Save the results as `xz`-compressed `.rds` files, commit them, and delete the raw JSON.
+```{r}
+#| eval: false
+#| code-summary: "Save data"
+saveRDS(new_orleans_restaurants, business_filtered_rds, compress = "xz")
+# ...
+```
+
+**Known issues and how they were handled**
+
+| Problem | What to expect | Solution |
+|---|---|---|
+| Large download | 4 GB zip file and unziped file | Ensure enough disk space |
+| Can't copy single files out of the zip | | Unzip the whole archive and move the three needed files to data folder. Ensure enough disk space and memory for the data transfer|
+| Large review and user json file | 3 - 5 GB each. `jsonlite::stream_in()` method ran more than 1 hour and hitting memory issue without finishing | Filter in DuckDB with SQL, so R reads and filter data simultaneously and only load the needed data |
+| Large json file | ~100MB for business, 5GB for review, and 3GB for user | Ensure enough disk space. Raw json data is only loaded once and resaved as RDS. Subsequent analysis load from the RDS file. Only the RDS files are committed to GitHub; raw folder listed in `.gitignore`. Raw JSON data is deleted|
+
+## 2. Geographical Analysis (Detail Tables)
+The **Summary** tab compares restaurant coverage, geographic area sizes, restaurant counts, and restaurant density across the three geographic systems for the selected vegetarian-friendly categories: “Vegetarian”, “Vegan”, “Falafel”, “Bagels”.
+
+The remaining tabs list the area records with `n_restaurants => 3` in that geographic system.
+
+```{r comparison-table}
+comparison_table <- bind_rows(lapply(names(results), function(label) {
+  summary <- results[[label]]$geo_system_summary |>
+    st_drop_geometry()
+
+  tibble(
+    `Geographic system` = label,
+
+    # Restaurant coverage
+    `Total restaurants` = summary$total_restaurants,
+    `Matched restaurants` = summary$matched_restaurants,
+    
+
+    # Boundary coverage and size
+    `Total # of areas` = summary$total_areas,
+    `# of areas with restaurants` = summary$total_areas - summary$empty_areas,
+    `Median sq mi` = summary$median_sqmi,
+
+    # Restaurant counts in non-empty areas
+    `Median # of restaurants per area` = summary$median_restaurants,
+
+    # Density in non-empty areas
+    `Median density` = summary$median_density,
+  )
+}))
+
+# Display metrics down the rows for a readable, side-by-side comparison.
+count_metrics <- c(
+  "Total restaurants", "Missing coordinates", "Matched restaurants",
+   "Total # of areas", "# of areas with restaurants", "Empty areas", "Sparse areas"
+  , "Minimum restaurants per area"
+  , "25th percentile restaurants per area"
+  , "Median restaurants per area"
+  , "75th percentile restaurants per area"
+  , "Maximum restaurants per area", "Areas below median density"
+)
+
+comparison_display <- comparison_table |>
+  pivot_longer(
+    cols = -`Geographic system`,
+    names_to = "Metric",
+    values_to = "Value"
+  ) |>
+  mutate(
+    Category = case_when(
+      Metric %in% c("Total restaurants", "Matched restaurants",
+                    "Missing coordinates") ~ "Restaurant coverage",
+      Metric %in% c("Total # of areas", "# of areas with restaurants", "Empty areas", "Sparse areas",
+                    "Mean sq mi", "Median sq mi") ~ "Geographic areas",
+      str_detect(Metric, "restaurants per area") ~ "Restaurants per area",
+      TRUE ~ "Restaurant density (per sq mi)"
+    ),
+    Value = if_else(
+      Metric %in% count_metrics,
+      formatC(Value, format = "f", digits = 0, big.mark = ","),
+      formatC(Value, format = "f", digits = 2, big.mark = ",")
+    )
+  ) |>
+  select(Category, Metric, `Geographic system`, Value) |>
+  pivot_wider(names_from = `Geographic system`, values_from = Value)
+```
+
+```{r area-summary-data}
+area_summary_table <- bind_rows(lapply(names(results), function(label) {
+  results[[label]]$area_summary |>
+    st_drop_geometry() |>
+    filter(n_restaurants > 2) |>
+    transmute(
+      `Geographic system` = label,
+      `Area name` = area_name,
+      Restaurants = n_restaurants,
+      `Area (sq mi)` = round(area_sqmi, 2),
+      `Restaurants / sq mi` = round(restaurants_per_sqmi, 2),
+      `Average rating` = round(avg_rating, 2),
+      `Median rating` = round(median_rating, 2),
+      `Weighted rating` = round(weighted_rating, 2)
+    )
+})) |>
+  arrange(`Geographic system`, desc(Restaurants), `Area name`)
+
+# FixedColumns freezes the first two columns while the remaining metrics scroll.
+make_area_table <- function(geography) {
+  DT::datatable(
+    area_summary_table |>
+      filter(`Geographic system` == geography),
+    rownames = FALSE,
+    extensions = 'FixedColumns',
+    options = list(
+      scrollX = TRUE,
+      scrollY = "550px",
+      scrollCollapse = TRUE,
+      fixedColumns = list(leftColumns = 2),
+      paging = FALSE,
+      searching = TRUE,
+      info = FALSE,
+      dom = 'ft'
+    )
+  )
+}
+```
+::: {.panel-tabset}
+
+### Summary
+
+```{r}
+knitr::kable(
+  comparison_display,
+  caption = "Geographic coverage, area size, restaurant counts, and density by system",
+  align = c("l", "l", "r", "r", "r")
+)
+```
+
+### ZIP/ZCTA
+
+```{r}
+make_area_table("ZIP/ZCTA")
+```
+
+### Census tract
+
+```{r}
+make_area_table("Census tract")
+```
+
+### Neighborhood Statistical Area
+
+```{r}
+make_area_table("Neighborhood Statistical Area")
+```
+
+:::
+
+## 3. Rating Analysis Details
+
+### 3.1 Selecting reviewers
+
+A reviewer is eligible if they have written at least **`r min_reviewer_reviews` lifetime Yelp reviews** (`review_count` in the user file). Someone with a long review history has an established scoring habit, so a review that departs from it carries more information. `r comma(ret_elig$reviewers)` of `r comma(ret_all$reviewers)` reviewers meet the rule, and they wrote `r comma(ret_elig$reviews)` of the `r comma(ret_all$reviews)` reviews for the selected restaurants.
+
+```{r}
+#| label: threshold-sensitivity-table
+
+threshold_sensitivity |>
+  transmute(
+    `Min. lifetime reviews` = min_lifetime_reviews,
+    `Reviewers kept`        = comma(reviewers_retained),
+    `% of reviewers`        = percent(pct_reviewers, accuracy = 0.1),
+    `Reviews kept`          = comma(reviews_retained),
+    `% of reviews`          = percent(pct_reviews, accuracy = 0.1),
+    `Restaurants covered`   = restaurants_covered
+  ) |>
+  kable(align = "rrrrrr",
+        caption = paste0("Reviewer retention by lifetime-review threshold (main analysis uses ",
+                         min_reviewer_reviews, ")"))
+```
+
+```{r}
+#| label: threshold-sensitivity-plot
+#| fig-width: 7
+#| fig-height: 3.5
+#| fig-cap: "Share of reviewers and reviews kept at each lifetime-review threshold. The dashed line marks the threshold used."
+
+threshold_sensitivity |>
+  select(min_lifetime_reviews, Reviewers = pct_reviewers, Reviews = pct_reviews) |>
+  pivot_longer(-min_lifetime_reviews, names_to = "measure", values_to = "share") |>
+  ggplot(aes(min_lifetime_reviews, share, color = measure)) +
+  geom_vline(xintercept = min_reviewer_reviews, linetype = "dashed", color = "grey50") +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  scale_x_log10(breaks = threshold_options) +
+  scale_y_continuous(labels = percent, limits = c(0, 1)) +
+  scale_color_manual(values = c(Reviewers = "#2780e3", Reviews = "#1a4f8b")) +
+  labs(x = "Minimum lifetime reviews (log scale)", y = "Share kept", color = NULL) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+### 3.2 Normalizing reviewer scores
+
+Each eligible reviewer's baseline is their **mean** star rating across the selected restaurants:
+
+$$\text{normalized score} = \text{stars given} - \text{reviewer's mean stars}$$
+
+The mean was chosen over the median because star ratings take only five values, so a median baseline often equals the review itself. The normalized score is **not a new Yelp rating**; it measures how a restaurant compares with each reviewer's own habits.
+
+**Caveat:** `r comma(one_review$n_one)` of `r comma(one_review$n_reviewers)` eligible reviewers (`r percent(one_review$pct_one, accuracy = 0.1)`) wrote only one review in these categories, so their normalized score is always 0, which pulls adjusted scores toward zero.
+
+A restaurant is ranked under **all reviewers** if it has at least `r min_restaurant_reviews` reviews (`r n_ranked_all` restaurants), and under the **adjusted** method if it has at least `r min_eligible_reviews` eligible reviews (`r n_ranked_adj` restaurants).
+
+### 3.3 Rank changes
+
+```{r}
+#| label: top10-rank-change
+#| fig-width: 8
+#| fig-height: 5.5
+#| fig-cap: "Rank under each method for restaurants in either top 10 (log scale; further left is better). Restaurants without enough eligible reviews to be ranked after adjustment are not shown."
+
+rank_compare <- restaurant_ratings |>
+  filter(
+    business_id %in% c(top10_all$business_id, top10_adjusted$business_id),
+    !is.na(rank_all), !is.na(rank_adjusted)
+  ) |>
+  mutate(
+    label = paste0(business_name, " (", area_name, ")"),
+    label = fct_reorder(label, rank_adjusted, .desc = TRUE)
+  )
+
+ggplot(rank_compare, aes(y = label)) +
+  geom_segment(aes(x = rank_all, xend = rank_adjusted, yend = label), color = "grey70") +
+  geom_point(aes(x = rank_all, color = "All reviewers"), size = 2.5) +
+  geom_point(aes(x = rank_adjusted, color = "Reviewer-adjusted"), size = 2.5) +
+  scale_x_log10(breaks = c(1, 2, 5, 10, 20, 50, 100, 200)) +
+  scale_color_manual(values = c(`All reviewers` = "grey55", `Reviewer-adjusted` = "#2780e3")) +
+  labs(x = "Rank (log scale)", y = NULL, color = NULL) +
+  theme_minimal() +
+  theme(legend.position = "top", panel.grid.minor = element_blank())
+```
+
+```{r}
+#| label: biggest-changes
+
+biggest_rank_changes |>
+  transmute(
+    Restaurant          = business_name,
+    ZIP                 = area_name,
+    `Reviews (all)`     = n_reviews_all,
+    `Avg stars`         = round(mean_stars_all, 2),
+    `Eligible reviews`  = n_reviews_eligible,
+    `Avg normalized`    = round(mean_normalized, 3),
+    `Rank (all)`        = rank_all,
+    `Rank (adj.)`       = rank_adjusted,
+    `Change`            = sprintf("%+d", as.integer(rank_change))
+  ) |>
+  kable(align = "llrrrrrrr",
+        caption = "10 largest rank changes after reviewer adjustment (positive = moved up)")
+```
+
+The restaurants that moved most have a median of `r med_elig_moved` eligible reviews, compared with `r med_elig_ranked` for all restaurants ranked both ways. `r if (med_elig_moved < med_elig_ranked) "That suggests small samples drive part of the movement: a few eligible reviews can swing an average a long way." else "So the movement is not simply a small-sample effect; it more likely reflects who reviews these restaurants, for example, a customer base of reviewers who rate generously or harshly everywhere."`
+
+### 3.4 Does the reviewer threshold change the top 10?
+
+```{r}
+#| label: threshold-overlap
+
+threshold_overlap |>
+  transmute(
+    `Min. lifetime reviews`         = min_lifetime_reviews,
+    `Restaurants in top 10`         = n_ranked,
+    `Shared with main top 10`       = overlap_with_main_top10
+  ) |>
+  kable(align = "rrr",
+        caption = paste0("Overlap between the adjusted top 10 at each threshold and the main top 10 (threshold = ",
+                         min_reviewer_reviews, ")"))
+```
+
+The more restaurants a threshold shares with the main list, the less the conclusions depend on the exact cutoff.
+
+### 3.5 ZIP code scores
+
+Each ZIP code's score is the average of its restaurants' scores, so every restaurant counts once regardless of review volume. Only ZIP codes with at least `r min_restaurants_per_area` selected restaurants are ranked (`r nrow(rankable_zips)` ZIP codes).
+
+```{r}
+#| label: zip-table
+
+zip_ratings |>
+  filter(rankable) |>
+  transmute(
+    ZIP                     = area_name,
+    Restaurants             = n_restaurants,
+    `Reviews (all)`         = comma(n_reviews_all),
+    `Avg stars (all)`       = round(mean_stars_all, 2),
+    `Rank (all)`            = rank_all,
+    `Eligible reviews`      = comma(n_reviews_eligible),
+    `Avg normalized`        = round(mean_normalized, 3),
+    `Rank (adj.)`           = rank_adjusted,
+    `Top-10 restaurants`    = n_top10_adjusted
+  ) |>
+  kable(align = "lrrrrrrrr",
+        caption = "ZIP codes ranked by reviewer-adjusted score")
+```
+
+```{r}
+#| label: zip-dotplot
+#| fig-width: 8
+#| fig-height: 4
+#| fig-cap: "ZIP code scores under each method. ZIP codes are ordered by the reviewer-adjusted score."
+
+zip_plot_data <- rankable_zips |>
+  mutate(area_name = fct_reorder(area_name, mean_normalized)) |>
+  select(area_name, `Avg stars (all reviewers)` = mean_stars_all,
+         `Avg normalized score (adjusted)` = mean_normalized) |>
+  pivot_longer(-area_name, names_to = "measure", values_to = "value")
+
+ggplot(zip_plot_data, aes(value, area_name)) +
+  geom_segment(aes(x = if_else(str_detect(measure, "normalized"), 0, NA_real_),
+                   xend = value, yend = area_name), color = "grey75") +
+  geom_point(color = "#2780e3", size = 2.5) +
+  facet_wrap(~measure, scales = "free_x") +
+  labs(x = NULL, y = "ZIP code") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank())
+```
+
+### 3.6 Limitations
+
+- **Single-review reviewers:** eligible reviewers with one review in these categories always score 0, which shrinks adjusted scores toward zero.
+- **Small samples:** restaurants near the `r min_eligible_reviews`-eligible-review minimum can move a long way on a few reviews; check the *Eligible reviews* column before trusting a large rank change.
+- **Category labels:** inclusion depends on how owners tag their business on Yelp; vegetarian-friendly restaurants without one of the four labels are missed.
+- **ZIP codes are not neighborhoods:** a ZIP can span several distinct areas, so a strong ZIP score does not mean every block within it is a good bet.
+
+## 4. Geographic Boundary Sources
+
+The three boundary systems were obtained from the following sources and versions:
+
+| Geographic system | Boundary source | R method or file | Version / notes |
+|---|---|---|---|
+| ZIP/ZCTA | [U.S. Census Bureau ZCTA](https://www.census.gov/programs-surveys/geography/guidance/geo-areas/zctas.html) | `tigris::zctas()` | 2020 boundaries; filtered to New Orleans |
+| Census tract | [U.S. Census Bureau Census Tracts](https://www.census.gov/programs-surveys/geography/about/glossary.html#par_textimage_13) | `tigris::tracts()` | 2024 boundaries; filtered to Orleans Parish and New Orleans |
+| Neighborhood Statistical Area | [City of New Orleans Open Data](https://data.nola.gov/browse?q=Neighborhood%20Statistical%20Area) | `neighborhoods_area_20261018.geojson` | GeoJSON boundary dataset downloaded from the city data portal |
+
+## 5. Source code
+
+- [`scripts/setup.R`](scripts/setup.R): installs packages
+- [`scripts/config.R`](scripts/config.R): libraries, file paths, selected categories
+- [`scripts/import.R`](scripts/import.R): imports the JSON files, filters, saves `.rds`
+- [`scripts/categories_analysis.R`](scripts/categories_analysis.R): category exploration
+- [`scripts/geography_analysis.R`](scripts/geography_analysis.R): spatial joins and boundary comparison
+- [`scripts/ratings_analysis.R`](scripts/ratings_analysis.R): reviewer eligibility, normalized scores, restaurant and ZIP rankings
+
+## 6. Citation
+- https://www.swellcx.com/resources/how-many-google-reviews
+- https://www.sci-tech-today.com/stats/online-review-statistics-updated/
+- https://www.applausehq.com/blog/google-review-rating-and-review-count
+
+

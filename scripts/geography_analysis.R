@@ -43,6 +43,12 @@ louisiana_places <- tigris::places(
   class = "sf"
 )
 
+nola_city <- louisiana_places |>
+  dplyr::filter(NAME == "New Orleans")
+
+# glimpse(louisiana_places)
+# sort(unique(louisiana_places$NAME))
+
 # Census Tract
 nola_tracts <- tigris::tracts(
   state = "LA",
@@ -50,11 +56,14 @@ nola_tracts <- tigris::tracts(
   cb = TRUE,
   year = 2024,
   class = "sf"
-)
+) |>
+  sf::st_filter(nola_city)
+
+
 
 # Neighborhood Statistical Areas
 nola_neighborhoods <- st_read(
-  "data/new_orleans/neighborhoods_area_20261110.geojson"
+  "data/new_orleans/neighborhoods_area_20261018.geojson"
 )
 
 # Zip
@@ -64,10 +73,7 @@ nola_zctas <- tigris::zctas(
   class = "sf"
 ) |>
   st_transform(st_crs(louisiana_places)) |>
-  st_filter(
-    louisiana_places |>
-      filter(NAME == "New Orleans")
-  )
+  st_filter(nola_city)
 
 
 # Geography Analysis ===========================================================
@@ -152,6 +158,10 @@ map_restaurants <- function(
       )
     )
   
+  #4c for troubleshooting
+  unmatched_restaurants <- restaurants_with_area |>
+    filter(is.na(area_id)) |>
+    distinct(business_id, .keep_all = TRUE)
   
   
   # 5a.Geography system summary: Evaluate geographic coverage
@@ -200,7 +210,7 @@ map_restaurants <- function(
       q25_restaurants = quantile(n_restaurants[n_restaurants > 0], probs = 0.25), #25th quantile
       median_restaurants = median(n_restaurants[n_restaurants > 0]),              #Med
       mean_restaurants = mean(n_restaurants[n_restaurants > 0]),                  #Avg
-      q25_restaurants = quantile(n_restaurants[n_restaurants > 0], probs = 0.75), #75th quantile
+      q75_restaurants = quantile(n_restaurants[n_restaurants > 0], probs = 0.75), #75th quantile
       max_restaurants = max(n_restaurants[n_restaurants > 0])                     #Max
     ) |>
     bind_cols(coverage)
@@ -269,6 +279,7 @@ map_restaurants <- function(
   # 7. Return results
   list(
     restaurants = restaurants_with_area,
+    unmatched_restaurants = unmatched_restaurants,
     area_summary = area_summary,
     geo_system_summary = geo_system_summary,
     location_map = location_map,
@@ -302,7 +313,7 @@ zip_result <- map_restaurants(
   map_title = "New Orleans Postal Code"
 )
 
-# Results ======================================================================
+# Results Review (uncomment if needed) =========================================
 # tracts_result$geo_system_summary
 # tracts_result$area_summary |>
 #   filter(n_restaurants > 4)
@@ -314,3 +325,20 @@ zip_result <- map_restaurants(
 # zip_result$geo_system_summary
 # zip_result$area_summary |>
 #   filter(n_restaurants > 4)
+
+# Troubleshoot unmatched restaurants before savings
+# neighborhood_result$unmatched_restaurants
+
+# Savings selected data ========================================================
+geo_result <- zip_result
+
+selected_businesses_geo <- geo_result$restaurants |>
+  st_drop_geometry() |>
+  select(business_id, business_name, stars, review_count,
+         latitude, longitude, area_id, area_name)
+
+saveRDS(selected_businesses_geo, business_selected_rds)
+saveRDS(
+  geo_result$area_summary |> select(area_id, area_name, geometry),
+  boundaries_selected_rds        # for the final top-10 map
+)
